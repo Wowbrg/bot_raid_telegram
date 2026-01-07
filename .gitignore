@@ -35,9 +35,6 @@ bot_data.db-journal
 *.log
 logs/
 
-# Audio files
-audio/
-
 # IDE
 .idea/
 .vscode/
