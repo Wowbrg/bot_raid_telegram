@@ -23,6 +23,8 @@ def setup(database: Database, tm: TaskManager):
 @router.callback_query(F.data == "menu_tasks")
 async def menu_tasks(callback: CallbackQuery):
     """Меню задач"""
+    await callback.answer()
+
     active_tasks = await db.get_active_tasks()
 
     text = f"""
@@ -38,13 +40,14 @@ async def menu_tasks(callback: CallbackQuery):
         reply_markup=tasks_menu_kb(),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 # === АКТИВНЫЕ ЗАДАЧИ ===
 
 @router.callback_query(F.data == "tasks_active")
 async def tasks_active(callback: CallbackQuery):
     """Список активных задач"""
+    await callback.answer()
+
     tasks = await db.get_active_tasks()
 
     if not tasks:
@@ -52,7 +55,6 @@ async def tasks_active(callback: CallbackQuery):
             "📋 Нет активных задач.",
             reply_markup=back_button("menu_tasks")
         )
-        await callback.answer()
         return
 
     text = "⚡ <b>Активные задачи</b>\n\n"
@@ -95,7 +97,6 @@ async def tasks_active(callback: CallbackQuery):
         reply_markup=back_button("menu_tasks"),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 # === ДЕТАЛИ ЗАДАЧИ ===
 
@@ -108,6 +109,8 @@ async def task_detail(callback: CallbackQuery):
     if not task:
         await callback.answer("❌ Задача не найдена", show_alert=True)
         return
+
+    await callback.answer()
 
     task_names = {
         'join_leave_groups': 'Вход/Выход из групп',
@@ -164,7 +167,6 @@ async def task_detail(callback: CallbackQuery):
         reply_markup=task_detail_kb(task_id),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 # === ОСТАНОВКА ЗАДАЧ ===
 
@@ -199,6 +201,8 @@ async def tasks_stop_all(callback: CallbackQuery):
 @router.callback_query(F.data == "tasks_history")
 async def tasks_history(callback: CallbackQuery):
     """История задач"""
+    await callback.answer()
+
     # Получаем все задачи из БД
     import aiosqlite
 
@@ -215,7 +219,6 @@ async def tasks_history(callback: CallbackQuery):
             "📜 История пуста.",
             reply_markup=back_button("menu_tasks")
         )
-        await callback.answer()
         return
 
     task_names = {
@@ -249,4 +252,3 @@ async def tasks_history(callback: CallbackQuery):
         reply_markup=back_button("menu_tasks"),
         parse_mode="HTML"
     )
-    await callback.answer()

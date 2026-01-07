@@ -39,6 +39,7 @@ class ActionStates(StatesGroup):
 @router.callback_query(F.data == "menu_actions")
 async def menu_actions(callback: CallbackQuery, state: FSMContext):
     """Меню действий"""
+    await callback.answer()
     await state.clear()
 
     text = """
@@ -52,7 +53,6 @@ async def menu_actions(callback: CallbackQuery, state: FSMContext):
         reply_markup=actions_menu_kb(),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 # === ВХОД/ВЫХОД ИЗ ГРУПП ===
 
@@ -61,10 +61,12 @@ async def action_join_leave(callback: CallbackQuery, state: FSMContext):
     """Настройка входа/выхода из групп"""
     await state.update_data(action_type='join_leave_groups')
 
-    accounts = await db.get_all_accounts(status='active')
+    accounts = await account_manager.get_valid_accounts(status='active')
     if not accounts:
         await callback.answer("❌ Нет активных аккаунтов", show_alert=True)
         return
+
+    await callback.answer()
 
     text = """
 🔄 <b>Вход/Выход из групп</b>
@@ -77,14 +79,15 @@ async def action_join_leave(callback: CallbackQuery, state: FSMContext):
         reply_markup=select_accounts_kb(len(accounts)),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 @router.callback_query(F.data.startswith("select_accounts_"))
 async def select_accounts(callback: CallbackQuery, state: FSMContext):
     """Выбор количества аккаунтов"""
+    await callback.answer()
+
     selection = callback.data.split("_")[-1]
 
-    accounts = await db.get_all_accounts(status='active')
+    accounts = await account_manager.get_valid_accounts(status='active')
     account_ids = [acc['id'] for acc in accounts]
 
     if selection == "all":
@@ -95,7 +98,6 @@ async def select_accounts(callback: CallbackQuery, state: FSMContext):
             reply_markup=cancel_button()
         )
         await state.set_state(ActionStates.select_accounts)
-        await callback.answer()
         return
     else:
         count = int(selection)
@@ -115,9 +117,9 @@ async def select_accounts(callback: CallbackQuery, state: FSMContext):
         await configure_mass_msg(callback, state)
     elif action_type == 'voice_call':
         await configure_voice(callback, state)
-    elif action_type == 'reactions':
+    elif action_type == 'set_reactions':
         await configure_reactions(callback, state)
-    elif action_type == 'subscribe':
+    elif action_type == 'subscribe_channel':
         await configure_subscribe(callback, state)
     elif action_type == 'start_bots':
         await configure_start_bots(callback, state)
@@ -151,7 +153,6 @@ async def configure_join_leave(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     await state.set_state(ActionStates.configure)
-    await callback.answer()
 
 @router.message(StateFilter(ActionStates.configure))
 async def process_configure(message: Message, state: FSMContext):
@@ -182,6 +183,174 @@ async def process_configure(message: Message, state: FSMContext):
         await state.update_data(config=config)
         await show_confirmation(message, state)
 
+    elif action_type == 'mass_messaging':
+        # Проверяем, используются ли шаблоны
+        use_templates = data.get('use_templates', False)
+
+        if use_templates:
+            # Если используются шаблоны, парсим: ссылка | количество
+            parts = [p.strip() for p in message.text.split('|')]
+            group_link = parts[0]
+            message_count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 100
+
+            messages = data.get('messages', [])
+
+            if not messages:
+                await message.answer("❌ Ошибка: нет сохраненных сообщений из шаблонов.")
+                return
+
+            config = {
+                'group_link': group_link,
+                'messages': messages,
+                'message_count': message_count,
+                'delay_min': 5,
+                'delay_max': 15
+            }
+
+            await state.update_data(config=config)
+            await show_confirmation(message, state)
+        else:
+            # Если пользовательский текст, парсим ссылку, количество и сообщения
+            lines = message.text.strip().split('\n')
+            if len(lines) < 2:
+                await message.answer("❌ Неверный формат. Нужна ссылка на группу и хотя бы одно сообщение.")
+                return
+
+            # Первая строка: ссылка | количество
+            first_line_parts = [p.strip() for p in lines[0].split('|')]
+            group_link = first_line_parts[0]
+            message_count = int(first_line_parts[1]) if len(first_line_parts) > 1 and first_line_parts[1].isdigit() else 100
+
+            # Остальные строки - сообщения
+            messages = [line.strip() for line in lines[1:] if line.strip()]
+
+            if not messages:
+                await message.answer("❌ Нет сообщений для отправки.")
+                return
+
+            config = {
+                'group_link': group_link,
+                'messages': messages,
+                'message_count': message_count,
+                'delay_min': 5,
+                'delay_max': 15
+            }
+
+            await state.update_data(config=config)
+            await show_confirmation(message, state)
+
+    elif action_type == 'screenshot_spam':
+        # Парсим: @username | количество
+        parts = [p.strip() for p in message.text.split('|')]
+        if len(parts) < 2:
+            await message.answer("❌ Неверный формат. Попробуйте еще раз.")
+            return
+
+        config = {
+            'username': parts[0],
+            'count': int(parts[1]) if parts[1].isdigit() else 100,
+            'delay_min': 0,
+            'delay_max': 0.5,
+            'account_delay_min': 1,
+            'account_delay_max': 3
+        }
+
+        await state.update_data(config=config)
+        await show_confirmation(message, state)
+
+    elif action_type == 'set_reactions':
+        # Обрабатываем разные форматы
+        lines = message.text.strip().split('\n')
+
+        # Проверяем, указана ли ссылка-приглашение (для приватного канала)
+        invite_link = None
+        post_or_channel_link = None
+
+        if len(lines) > 1:
+            # Вариант с приватным каналом: первая строка - invite, вторая - пост
+            invite_link = lines[0].strip()
+            post_or_channel_link = lines[1].strip()
+        else:
+            # Обычный вариант
+            post_or_channel_link = lines[0].strip()
+
+        # Парсим основную строку: ссылка | параметры
+        parts = [p.strip() for p in post_or_channel_link.split('|')]
+        if len(parts) < 1:
+            await message.answer("❌ Неверный формат. Попробуйте еще раз.")
+            return
+
+        link = parts[0]
+
+        # Определяем, это ссылка на конкретный пост или на канал
+        is_post_link = False
+        if '/c/' in link or (link.count('/') >= 3 and link.split('/')[-1].isdigit()):
+            is_post_link = True
+
+        config = {
+            'delay_min': 0,
+            'delay_max': 1,
+            'account_delay_min': 1,
+            'account_delay_max': 3,
+            'random_reactions': False
+        }
+
+        if is_post_link:
+            # Это ссылка на конкретный пост
+            config['post_link'] = link
+            config['reaction'] = parts[1] if len(parts) > 1 else '👍'
+        else:
+            # Это ссылка на канал - ставим на последние посты
+            config['group_link'] = link
+            config['posts_count'] = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
+            config['reaction'] = parts[2] if len(parts) > 2 else '👍'
+
+        # Добавляем invite_link, если указан
+        if invite_link:
+            config['invite_link'] = invite_link
+
+        await state.update_data(config=config)
+        await show_confirmation(message, state)
+
+    elif action_type == 'subscribe_channel':
+        # Парсим список каналов (каждый с новой строки)
+        channels = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
+
+        if not channels:
+            await message.answer("❌ Не указаны каналы для подписки.")
+            return
+
+        config = {
+            'channels': channels,
+            'delay_min': 0,
+            'delay_max': 1,
+            'account_delay_min': 2,
+            'account_delay_max': 4
+        }
+
+        await state.update_data(config=config)
+        await show_confirmation(message, state)
+
+    elif action_type == 'start_bots':
+        # Парсим: @bot_username | реферальный_код
+        parts = [p.strip() for p in message.text.split('|')]
+        if len(parts) < 1:
+            await message.answer("❌ Неверный формат. Попробуйте еще раз.")
+            return
+
+        bot_username = parts[0]
+        start_param = parts[1] if len(parts) > 1 else ''
+
+        config = {
+            'bot_username': bot_username,
+            'start_param': start_param,
+            'delay_min': 2,
+            'delay_max': 5
+        }
+
+        await state.update_data(config=config)
+        await show_confirmation(message, state)
+
 # === ПОДТВЕРЖДЕНИЕ ===
 
 async def show_confirmation(message: Message, state: FSMContext):
@@ -196,8 +365,8 @@ async def show_confirmation(message: Message, state: FSMContext):
         'screenshot_spam': '📸 Скриншот-спам',
         'mass_messaging': '💬 Массовая рассылка',
         'voice_call': '📞 Голосовой чат',
-        'reactions': '❤️ Реакции',
-        'subscribe': '➕ Подписки',
+        'set_reactions': '❤️ Реакции',
+        'subscribe_channel': '➕ Подписки',
         'start_bots': '🤖 Запуск ботов',
         'cleanup': '🧹 Очистка'
     }
@@ -211,11 +380,19 @@ async def show_confirmation(message: Message, state: FSMContext):
 <b>Настройки:</b>
 """
 
-    for key, value in config.items():
-        if isinstance(value, list) and len(value) > 3:
-            text += f"  • {key}: {len(value)} элементов\n"
-        else:
-            text += f"  • {key}: {value}\n"
+    # Специальное отображение для массовой рассылки
+    if action_type == 'mass_messaging':
+        text += f"  • Группа: {config.get('group_link', 'N/A')}\n"
+        text += f"  • Уникальных сообщений: {len(config.get('messages', []))}\n"
+        text += f"  • Сообщений на аккаунт: {config.get('message_count', 100)}\n"
+        text += f"  • Задержка между сообщениями: {config.get('delay_min', 5)}-{config.get('delay_max', 15)} сек\n"
+        text += f"\n💡 Сообщения будут повторяться циклично\n"
+    else:
+        for key, value in config.items():
+            if isinstance(value, list) and len(value) > 3:
+                text += f"  • {key}: {len(value)} элементов\n"
+            else:
+                text += f"  • {key}: {value}\n"
 
     text += "\nЗапустить?"
 
@@ -229,6 +406,8 @@ async def show_confirmation(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("confirm_"))
 async def confirm_action(callback: CallbackQuery, state: FSMContext):
     """Подтверждение и запуск"""
+    await callback.answer()
+
     data = await state.get_data()
 
     account_ids = data.get('account_ids', [])
@@ -257,8 +436,6 @@ async def confirm_action(callback: CallbackQuery, state: FSMContext):
             reply_markup=back_button("menu_actions")
         )
 
-    await callback.answer()
-
 # === СКРИНШОТ-СПАМ ===
 
 @router.callback_query(F.data == "action_screenshot")
@@ -266,10 +443,12 @@ async def action_screenshot(callback: CallbackQuery, state: FSMContext):
     """Скриншот-спам"""
     await state.update_data(action_type='screenshot_spam')
 
-    accounts = await db.get_all_accounts(status='active')
+    accounts = await account_manager.get_valid_accounts(status='active')
     if not accounts:
         await callback.answer("❌ Нет активных аккаунтов", show_alert=True)
         return
+
+    await callback.answer()
 
     text = """
 📸 <b>Скриншот-уведомления</b>
@@ -282,7 +461,6 @@ async def action_screenshot(callback: CallbackQuery, state: FSMContext):
         reply_markup=select_accounts_kb(len(accounts)),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 async def configure_screenshot(callback: CallbackQuery, state: FSMContext):
     """Настройка скриншот-спама"""
@@ -303,7 +481,6 @@ async def configure_screenshot(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     await state.set_state(ActionStates.configure)
-    await callback.answer()
 
 # === МАССОВАЯ РАССЫЛКА ===
 
@@ -312,10 +489,12 @@ async def action_mass_msg(callback: CallbackQuery, state: FSMContext):
     """Массовая рассылка"""
     await state.update_data(action_type='mass_messaging')
 
-    accounts = await db.get_all_accounts(status='active')
+    accounts = await account_manager.get_valid_accounts(status='active')
     if not accounts:
         await callback.answer("❌ Нет активных аккаунтов", show_alert=True)
         return
+
+    await callback.answer()
 
     text = """
 💬 <b>Массовая рассылка</b>
@@ -328,41 +507,65 @@ async def action_mass_msg(callback: CallbackQuery, state: FSMContext):
         reply_markup=select_accounts_kb(len(accounts)),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 async def configure_mass_msg(callback: CallbackQuery, state: FSMContext):
     """Настройка массовой рассылки"""
-    # Получаем шаблоны
+    from keyboards import message_source_kb
+
+    # Получаем количество шаблонов
+    templates = await db.get_all_templates()
+    templates_count = len(templates)
+
+    text = f"""
+💬 <b>Настройка рассылки</b>
+
+Выберите источник сообщений для рассылки:
+
+📝 <b>Шаблоны</b> - использовать готовые сообщения из базы данных
+   (Доступно шаблонов: {templates_count})
+
+✏️ <b>Свой текст</b> - написать собственные сообщения для рассылки
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=message_source_kb(),
+        parse_mode="HTML"
+    )
+
+@router.callback_query(F.data == "msg_source_templates")
+async def msg_source_templates(callback: CallbackQuery, state: FSMContext):
+    """Использование шаблонов для рассылки"""
+    await callback.answer()
+
+    # Получаем все шаблоны из базы данных
     templates = await db.get_all_templates()
 
     if not templates:
-        text = """
-💬 <b>Настройка рассылки</b>
+        await callback.answer("❌ Нет доступных шаблонов", show_alert=True)
+        return
 
-Отправьте данные в формате:
+    # Извлекаем содержимое всех шаблонов
+    messages = [template['content'] for template in templates]
 
-<code>ссылка_группы
-сообщение1
-сообщение2
-сообщение3</code>
+    # Сохраняем в состоянии, что используются шаблоны
+    await state.update_data(use_templates=True, messages=messages)
 
-Каждое сообщение с новой строки.
-"""
-    else:
-        template_list = "\n".join([f"• {t['name']}" for t in templates[:5]])
-        text = f"""
-💬 <b>Настройка рассылки</b>
+    text = f"""
+💬 <b>Настройка рассылки с шаблонами</b>
 
-<b>Доступные шаблоны:</b>
-{template_list}
+✅ Загружено {len(messages)} сообщений из шаблонов.
 
-Отправьте данные в формате:
+Теперь отправьте данные в формате:
 
-<code>ссылка_группы
-сообщение1
-сообщение2</code>
+<code>ссылка_группы | количество_сообщений</code>
 
-Или используйте шаблоны.
+<b>Примеры:</b>
+<code>https://t.me/group_name | 100</code>
+<code>@group_username | 500</code>
+
+Если не указать количество, каждый аккаунт отправит по 100 сообщений.
+Сообщения будут выбираться случайно из шаблонов и повторяться циклично.
 """
 
     await callback.message.edit_text(
@@ -371,7 +574,43 @@ async def configure_mass_msg(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     await state.set_state(ActionStates.configure)
+
+@router.callback_query(F.data == "msg_source_custom")
+async def msg_source_custom(callback: CallbackQuery, state: FSMContext):
+    """Пользовательский текст для рассылки"""
     await callback.answer()
+
+    # Сохраняем в состоянии, что используется пользовательский текст
+    await state.update_data(use_templates=False)
+
+    text = """
+💬 <b>Настройка рассылки с пользовательским текстом</b>
+
+Отправьте данные в формате:
+
+<code>ссылка_группы | количество_сообщений
+сообщение1
+сообщение2
+сообщение3</code>
+
+<b>Примеры:</b>
+<code>https://t.me/group_name | 100
+Привет!
+Как дела?
+Отличный день!</code>
+
+Первая строка: ссылка на группу и количество сообщений (через |).
+Остальные строки: ваши сообщения.
+Сообщения будут повторяться циклично до достижения указанного количества.
+Если не указать количество, по умолчанию будет 100 сообщений.
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=cancel_button(),
+        parse_mode="HTML"
+    )
+    await state.set_state(ActionStates.configure)
 
 # === ГОЛОСОВЫЕ ВЫЗОВЫ ===
 
@@ -394,7 +633,6 @@ async def configure_voice(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     await state.set_state(ActionStates.configure)
-    await callback.answer()
 
 # === РЕАКЦИИ ===
 
@@ -403,12 +641,28 @@ async def configure_reactions(callback: CallbackQuery, state: FSMContext):
     text = """
 ❤️ <b>Настройка реакций</b>
 
-Отправьте ссылку на группу в формате:
+<b>Вариант 1 - Ссылка на пост:</b>
+<code>https://t.me/channel/123 | эмодзи</code>
 
-<code>ссылка_группы</code>
+<b>Вариант 2 - Последние посты канала:</b>
+<code>https://t.me/channel | количество_постов | эмодзи</code>
 
-<b>Пример:</b>
-<code>https://t.me/group</code>
+<b>Вариант 3 - Приватный канал:</b>
+<code>https://t.me/+invite_hash
+https://t.me/c/channel_id/message_id | эмодзи</code>
+
+<b>Примеры:</b>
+<code>https://t.me/channel/5432 | 🔥</code>
+<code>https://t.me/channel | 10 | ❤️</code>
+<code>https://t.me/+ABC123xyz
+https://t.me/c/1234567890/100 | 👍</code>
+
+<b>Доступные реакции:</b>
+👍 👎 ❤️ 🔥 🥰 👏 😁 🤔 🤯 😱 🤬 😢 🎉 🤩 🤮 💩 🙏 👌 🕊 🤡
+🥱 🥴 😍 🐳 ❤️‍🔥 🌚 🌭 💯 🤣 ⚡ 🍌 🏆 💔 🤨 😐 🍓 🍾 💋 😈
+😴 😭 🤓 👻 👨‍💻 👀 🎃 🙈 😇 😨 🤝 ✍️ 🤗 🫡 и другие
+
+Если не указать эмодзи, будет использован 👍
 """
 
     await callback.message.edit_text(
@@ -417,7 +671,6 @@ async def configure_reactions(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     await state.set_state(ActionStates.configure)
-    await callback.answer()
 
 # === ПОДПИСКИ ===
 
@@ -441,7 +694,6 @@ async def configure_subscribe(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     await state.set_state(ActionStates.configure)
-    await callback.answer()
 
 # === ЗАПУСК БОТОВ ===
 
@@ -450,13 +702,23 @@ async def configure_start_bots(callback: CallbackQuery, state: FSMContext):
     text = """
 🤖 <b>Настройка запуска ботов</b>
 
-Отправьте список ботов в формате:
+Отправьте данные в формате:
 
-<code>@bot1
-@bot2
-@bot3</code>
+<code>@bot_username | реферальный_код</code>
 
-Каждый бот с новой строки.
+<b>Примеры:</b>
+<code>@example_bot | ref_12345</code>
+<code>@game_bot | start=abc123</code>
+<code>@simple_bot</code> (без реферального кода)
+
+<b>Как работает:</b>
+• Все выбранные аккаунты запустят указанного бота
+• Если указан реферальный код, он будет добавлен к команде /start
+• Например: /start ref_12345
+
+<b>Важно:</b>
+• Используйте @ перед именем бота
+• Реферальный код опционален
 """
 
     await callback.message.edit_text(
@@ -465,7 +727,6 @@ async def configure_start_bots(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     await state.set_state(ActionStates.configure)
-    await callback.answer()
 
 # === ОЧИСТКА ===
 
@@ -492,7 +753,6 @@ async def configure_cleanup(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     await state.set_state(ActionStates.configure)
-    await callback.answer()
 
 # === ДОПОЛНИТЕЛЬНЫЕ ДЕЙСТВИЯ (упрощенные заглушки) ===
 
@@ -501,16 +761,76 @@ async def action_voice(callback: CallbackQuery):
     await callback.answer("⚠️ Функция в разработке", show_alert=True)
 
 @router.callback_query(F.data == "action_reactions")
-async def action_reactions(callback: CallbackQuery):
-    await callback.answer("⚠️ Функция в разработке", show_alert=True)
+async def action_reactions(callback: CallbackQuery, state: FSMContext):
+    """Реакции"""
+    await state.update_data(action_type='set_reactions')
+
+    accounts = await account_manager.get_valid_accounts(status='active')
+    if not accounts:
+        await callback.answer("❌ Нет активных аккаунтов", show_alert=True)
+        return
+
+    await callback.answer()
+
+    text = """
+❤️ <b>Постановка реакций</b>
+
+Сколько аккаунтов использовать?
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=select_accounts_kb(len(accounts)),
+        parse_mode="HTML"
+    )
 
 @router.callback_query(F.data == "action_subscribe")
-async def action_subscribe(callback: CallbackQuery):
-    await callback.answer("⚠️ Функция в разработке", show_alert=True)
+async def action_subscribe(callback: CallbackQuery, state: FSMContext):
+    """Подписки"""
+    await state.update_data(action_type='subscribe_channel')
+
+    accounts = await account_manager.get_valid_accounts(status='active')
+    if not accounts:
+        await callback.answer("❌ Нет активных аккаунтов", show_alert=True)
+        return
+
+    await callback.answer()
+
+    text = """
+➕ <b>Подписка на каналы</b>
+
+Сколько аккаунтов использовать?
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=select_accounts_kb(len(accounts)),
+        parse_mode="HTML"
+    )
 
 @router.callback_query(F.data == "action_start_bots")
-async def action_start_bots(callback: CallbackQuery):
-    await callback.answer("⚠️ Функция в разработке", show_alert=True)
+async def action_start_bots(callback: CallbackQuery, state: FSMContext):
+    """Запуск ботов"""
+    await state.update_data(action_type='start_bots')
+
+    accounts = await account_manager.get_valid_accounts(status='active')
+    if not accounts:
+        await callback.answer("❌ Нет активных аккаунтов", show_alert=True)
+        return
+
+    await callback.answer()
+
+    text = """
+🤖 <b>Запуск ботов</b>
+
+Сколько аккаунтов использовать?
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=select_accounts_kb(len(accounts)),
+        parse_mode="HTML"
+    )
 
 @router.callback_query(F.data == "action_cleanup")
 async def action_cleanup(callback: CallbackQuery):

@@ -1,6 +1,8 @@
 import aiosqlite
 from datetime import datetime
 from typing import Optional, List, Dict
+import json
+import os
 import config
 
 class Database:
@@ -10,6 +12,18 @@ class Database:
     async def init_db(self):
         """Инициализация базы данных"""
         async with aiosqlite.connect(self.db_path) as db:
+            # Таблица админов
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS admins (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    added_by INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_super_admin INTEGER DEFAULT 0
+                )
+            """)
+
             # Таблица аккаунтов
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS accounts (
@@ -54,6 +68,22 @@ class Database:
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT
+                )
+            """)
+
+            # Таблица настроек скорости для действий
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS speed_settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action_type TEXT NOT NULL,
+                    delay_min REAL DEFAULT 1.0,
+                    delay_max REAL DEFAULT 3.0,
+                    message_delay_min REAL DEFAULT 5.0,
+                    message_delay_max REAL DEFAULT 15.0,
+                    account_delay_min REAL DEFAULT 2.0,
+                    account_delay_max REAL DEFAULT 5.0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(action_type)
                 )
             """)
 
@@ -106,11 +136,28 @@ class Database:
                        WHERE id = ?""",
                     (status, error, datetime.now().isoformat(), account_id)
                 )
+            elif error is None and status == 'active':
+                # При установке статуса 'active' очищаем ошибки
+                await db.execute(
+                    """UPDATE accounts
+                       SET status = ?, last_error = NULL, error_count = 0, last_used = ?
+                       WHERE id = ?""",
+                    (status, datetime.now().isoformat(), account_id)
+                )
             else:
                 await db.execute(
                     "UPDATE accounts SET status = ?, last_used = ? WHERE id = ?",
                     (status, datetime.now().isoformat(), account_id)
                 )
+            await db.commit()
+
+    async def update_account_session_name(self, account_id: int, session_name: str):
+        """Обновить имя сессии аккаунта"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE accounts SET session_name = ? WHERE id = ?",
+                (session_name, account_id)
+            )
             await db.commit()
 
     async def delete_account(self, account_id: int):
@@ -199,6 +246,55 @@ class Database:
             await db.execute("DELETE FROM message_templates WHERE id = ?", (template_id,))
             await db.commit()
 
+    async def load_system_templates(self, templates_file: str = "templates.json") -> int:
+        """Загрузить системные шаблоны из JSON файла"""
+        # Проверяем существование файла
+        if not os.path.exists(templates_file):
+            return 0
+
+        # Читаем файл
+        try:
+            with open(templates_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"Ошибка чтения файла шаблонов: {e}")
+            return 0
+
+        # Проверяем наличие ключа messages
+        if 'messages' not in data:
+            return 0
+
+        messages = data['messages']
+        loaded_count = 0
+
+        # Загружаем шаблоны
+        async with aiosqlite.connect(self.db_path) as db:
+            for idx, content in enumerate(messages, start=1):
+                if not content or not isinstance(content, str):
+                    continue
+
+                # Генерируем название шаблона
+                name = f"Шаблон {idx}"
+
+                # Проверяем, существует ли уже шаблон с таким содержимым
+                cursor = await db.execute(
+                    "SELECT id FROM message_templates WHERE content = ?",
+                    (content,)
+                )
+                existing = await cursor.fetchone()
+
+                # Если шаблон с таким содержимым не существует, добавляем
+                if not existing:
+                    await db.execute(
+                        "INSERT INTO message_templates (name, content) VALUES (?, ?)",
+                        (name, content)
+                    )
+                    loaded_count += 1
+
+            await db.commit()
+
+        return loaded_count
+
     # === НАСТРОЙКИ ===
 
     async def set_setting(self, key: str, value: str):
@@ -219,3 +315,106 @@ class Database:
             )
             row = await cursor.fetchone()
             return row[0] if row else default
+
+    # === НАСТРОЙКИ СКОРОСТИ ===
+
+    async def get_speed_settings(self, action_type: str) -> Optional[Dict]:
+        """Получить настройки скорости для действия"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM speed_settings WHERE action_type = ?",
+                (action_type,)
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def set_speed_settings(
+        self,
+        action_type: str,
+        delay_min: float = 1.0,
+        delay_max: float = 3.0,
+        message_delay_min: float = 5.0,
+        message_delay_max: float = 15.0,
+        account_delay_min: float = 2.0,
+        account_delay_max: float = 5.0
+    ):
+        """Установить настройки скорости для действия"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """INSERT OR REPLACE INTO speed_settings
+                   (action_type, delay_min, delay_max, message_delay_min, message_delay_max,
+                    account_delay_min, account_delay_max)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (action_type, delay_min, delay_max, message_delay_min, message_delay_max,
+                 account_delay_min, account_delay_max)
+            )
+            await db.commit()
+
+    async def get_all_speed_settings(self) -> List[Dict]:
+        """Получить все настройки скорости"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM speed_settings ORDER BY action_type")
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def delete_speed_settings(self, action_type: str):
+        """Удалить настройки скорости"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM speed_settings WHERE action_type = ?", (action_type,))
+            await db.commit()
+
+    # === АДМИНЫ ===
+
+    async def add_admin(self, user_id: int, username: Optional[str] = None,
+                       first_name: Optional[str] = None, added_by: Optional[int] = None,
+                       is_super_admin: bool = False) -> bool:
+        """Добавить админа"""
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                await db.execute(
+                    """INSERT INTO admins (user_id, username, first_name, added_by, is_super_admin)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (user_id, username, first_name, added_by, 1 if is_super_admin else 0)
+                )
+                await db.commit()
+                return True
+            except aiosqlite.IntegrityError:
+                return False
+
+    async def remove_admin(self, user_id: int) -> bool:
+        """Удалить админа"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_admin(self, user_id: int) -> Optional[Dict]:
+        """Получить информацию об админе"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM admins WHERE user_id = ?",
+                (user_id,)
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_all_admins(self) -> List[Dict]:
+        """Получить всех админов"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM admins ORDER BY created_at")
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def is_admin(self, user_id: int) -> bool:
+        """Проверить, является ли пользователь админом"""
+        admin = await self.get_admin(user_id)
+        return admin is not None
+
+    async def is_super_admin(self, user_id: int) -> bool:
+        """Проверить, является ли пользователь супер-админом"""
+        admin = await self.get_admin(user_id)
+        return admin is not None and admin['is_super_admin'] == 1

@@ -53,6 +53,20 @@ class TaskManager:
         results = []
 
         try:
+            # Применяем пользовательские настройки скорости, если они есть
+            speed_settings = await self.db.get_speed_settings(task_type)
+            if speed_settings:
+                # Обновляем config с пользовательскими настройками скорости
+                config['delay_min'] = speed_settings.get('delay_min', config.get('delay_min', 1.0))
+                config['delay_max'] = speed_settings.get('delay_max', config.get('delay_max', 3.0))
+                config['account_delay_min'] = speed_settings.get('account_delay_min', config.get('account_delay_min', 2.0))
+                config['account_delay_max'] = speed_settings.get('account_delay_max', config.get('account_delay_max', 5.0))
+
+                # Для массовой рассылки также обновляем message_delay
+                if task_type == 'mass_messaging':
+                    config['delay_min'] = speed_settings.get('message_delay_min', config.get('delay_min', 1.0))
+                    config['delay_max'] = speed_settings.get('message_delay_max', config.get('delay_max', 5.0))
+
             # Импортируем нужный модуль в зависимости от типа задачи
             if task_type == 'join_leave_groups':
                 from modules.group_actions import join_leave_groups
@@ -108,7 +122,7 @@ class TaskManager:
                     stop_flag
                 )
 
-            elif task_type == 'start_bot':
+            elif task_type == 'start_bots' or task_type == 'start_bot':
                 from modules.bot_starter import start_bots
                 results = await start_bots(
                     self.account_manager,

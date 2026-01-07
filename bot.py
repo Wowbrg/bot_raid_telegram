@@ -7,6 +7,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 import config
 from database import Database
+
 from modules.account_manager import AccountManager
 from modules.task_manager import TaskManager
 from keyboards import main_menu_kb
@@ -14,8 +15,11 @@ from handlers import (
     accounts_handlers,
     tasks_handlers,
     actions_handlers,
-    templates_handlers
+    templates_handlers,
+    speed_handlers,
+    admin_handlers
 )
+from middlewares.admin_check import AdminCheckMiddleware
 
 # Логирование
 logging.basicConfig(
@@ -39,17 +43,14 @@ accounts_handlers.setup(db, account_manager)
 tasks_handlers.setup(db, task_manager)
 actions_handlers.setup(db, account_manager, task_manager)
 templates_handlers.setup(db)
+speed_handlers.setup(db)
+admin_handlers.setup(db)
 
 # === ОСНОВНЫЕ ОБРАБОТЧИКИ ===
 
 @dp.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, is_super_admin: bool = False):
     """Обработчик команды /start"""
-    # Проверка на админа
-    if message.from_user.id != config.ADMIN_ID:
-        await message.answer("У вас нет доступа к этому боту.")
-        return
-
     # Отправляем стикер приветствия, если он указан
     if config.WELCOME_STICKER_ID:
         try:
@@ -85,25 +86,28 @@ async def cmd_start(message: Message):
 
     await message.answer(
         welcome_text,
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_kb(is_super_admin=is_super_admin),
         parse_mode="HTML"
     )
 
 @dp.callback_query(F.data == "menu_main")
-async def menu_main(callback: CallbackQuery):
+async def menu_main(callback: CallbackQuery, is_super_admin: bool = False):
     """Главное меню"""
+    await callback.answer()
+
     text = "🏠 <b>Главное меню</b>\n\nВыберите раздел:"
 
     await callback.message.edit_text(
         text,
-        reply_markup=main_menu_kb(),
+        reply_markup=main_menu_kb(is_super_admin=is_super_admin),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 @dp.callback_query(F.data == "menu_settings")
 async def menu_settings(callback: CallbackQuery):
     """Настройки"""
+    await callback.answer()
+
     from keyboards import settings_menu_kb
 
     settings_text = """
@@ -117,11 +121,12 @@ async def menu_settings(callback: CallbackQuery):
         reply_markup=settings_menu_kb(),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 @dp.callback_query(F.data == "settings_general")
 async def settings_general(callback: CallbackQuery):
     """Общие настройки"""
+    await callback.answer()
+
     from keyboards import back_button
 
     general_settings_text = """
@@ -141,11 +146,12 @@ async def settings_general(callback: CallbackQuery):
         reply_markup=back_button("menu_settings"),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 @dp.callback_query(F.data == "menu_help")
 async def menu_help(callback: CallbackQuery):
     """Помощь"""
+    await callback.answer()
+
     from keyboards import back_button
 
     help_text = """
@@ -183,7 +189,6 @@ async def menu_help(callback: CallbackQuery):
         reply_markup=back_button("menu_main"),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 @dp.callback_query(F.data == "noop")
 async def noop_callback(callback: CallbackQuery):
@@ -196,6 +201,33 @@ async def on_startup():
     """Действия при запуске"""
     logger.info("Инициализация базы данных...")
     await db.init_db()
+
+    # Загрузка системных шаблонов
+    logger.info("Загрузка системных шаблонов...")
+    loaded_count = await db.load_system_templates()
+    if loaded_count > 0:
+        logger.info(f"Загружено системных шаблонов: {loaded_count}")
+    else:
+        logger.info("Системные шаблоны уже загружены")
+
+    # Синхронизация сессий с базой данных
+    logger.info("Синхронизация файлов сессий с базой данных...")
+    sync_result = await account_manager.sync_sessions_with_db()
+    if sync_result['added']:
+        logger.info(f"Добавлено новых аккаунтов: {len(sync_result['added'])}")
+        for acc in sync_result['added']:
+            logger.info(f"  - ID {acc['id']}: {acc['phone']}")
+    if sync_result['errors']:
+        logger.warning(f"Ошибок при синхронизации: {len(sync_result['errors'])}")
+
+    # Очистка недействительных аккаунтов
+    logger.info("Очистка недействительных аккаунтов...")
+    cleanup_result = await account_manager.cleanup_invalid_accounts()
+    if cleanup_result['marked_error']:
+        logger.warning(f"Помечено как ошибка: {len(cleanup_result['marked_error'])}")
+        for acc in cleanup_result['marked_error']:
+            logger.warning(f"  - ID {acc['id']}: {acc['phone']} - файл сессии не найден")
+
     logger.info("Бот запущен!")
 
 async def on_shutdown():
@@ -208,11 +240,17 @@ async def on_shutdown():
 
 async def main():
     """Главная функция"""
+    # Подключаем middleware
+    dp.message.middleware(AdminCheckMiddleware(db))
+    dp.callback_query.middleware(AdminCheckMiddleware(db))
+
     # Подключаем роутеры
+    dp.include_router(admin_handlers.router)
     dp.include_router(accounts_handlers.router)
     dp.include_router(tasks_handlers.router)
     dp.include_router(actions_handlers.router)
     dp.include_router(templates_handlers.router)
+    dp.include_router(speed_handlers.router)
 
     # Запускаем
     await on_startup()

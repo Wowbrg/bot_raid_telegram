@@ -3,7 +3,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # === ГЛАВНОЕ МЕНЮ ===
 
-def main_menu_kb() -> InlineKeyboardMarkup:
+def main_menu_kb(is_super_admin: bool = False) -> InlineKeyboardMarkup:
     """Главное меню бота"""
     builder = InlineKeyboardBuilder()
     builder.row(
@@ -18,6 +18,11 @@ def main_menu_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings"),
         InlineKeyboardButton(text="❓ Помощь", callback_data="menu_help")
     )
+    # Кнопка управления админами только для супер-админа
+    if is_super_admin:
+        builder.row(
+            InlineKeyboardButton(text="👥 Админы", callback_data="menu_admins")
+        )
     return builder.as_markup()
 
 # === МЕНЮ АККАУНТОВ ===
@@ -31,6 +36,9 @@ def accounts_menu_kb() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(text="🔍 Проверить здоровье", callback_data="accounts_health"),
+        InlineKeyboardButton(text="🔄 Синхронизация", callback_data="accounts_sync")
+    )
+    builder.row(
         InlineKeyboardButton(text="🧹 Управление сессиями", callback_data="accounts_sessions")
     )
     builder.row(
@@ -172,6 +180,25 @@ def templates_menu_kb() -> InlineKeyboardMarkup:
     )
     return builder.as_markup()
 
+def templates_list_kb(page: int, total_pages: int, has_prev: bool, has_next: bool) -> InlineKeyboardMarkup:
+    """Клавиатура для списка шаблонов с пагинацией"""
+    builder = InlineKeyboardBuilder()
+
+    # Навигация
+    nav_buttons = []
+    if has_prev:
+        nav_buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"templates_page_{page-1}"))
+    nav_buttons.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"))
+    if has_next:
+        nav_buttons.append(InlineKeyboardButton(text="▶️ Вперед", callback_data=f"templates_page_{page+1}"))
+
+    builder.row(*nav_buttons)
+    builder.row(
+        InlineKeyboardButton(text="🔄 Обновить", callback_data=f"templates_page_{page}"),
+        InlineKeyboardButton(text="🔙 Назад", callback_data="menu_templates")
+    )
+    return builder.as_markup()
+
 def template_detail_kb(template_id: int) -> InlineKeyboardMarkup:
     """Детали шаблона"""
     builder = InlineKeyboardBuilder()
@@ -190,7 +217,33 @@ def settings_menu_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🔧 Общие настройки", callback_data="settings_general"),
     )
     builder.row(
+        InlineKeyboardButton(text="⚡ Настройки скорости", callback_data="settings_speed"),
+    )
+    builder.row(
         InlineKeyboardButton(text="🔙 Назад", callback_data="menu_main")
+    )
+    return builder.as_markup()
+
+def speed_settings_menu_kb() -> InlineKeyboardMarkup:
+    """Меню настроек скорости"""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="💬 Массовая рассылка", callback_data="speed_config_mass_messaging")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📸 Скриншот-спам", callback_data="speed_config_screenshot_spam")
+    )
+    builder.row(
+        InlineKeyboardButton(text="❤️ Реакции", callback_data="speed_config_set_reactions")
+    )
+    builder.row(
+        InlineKeyboardButton(text="➕ Подписки", callback_data="speed_config_subscribe_channel")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🤖 Запуск ботов", callback_data="speed_config_start_bots")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔙 Назад", callback_data="menu_settings")
     )
     return builder.as_markup()
 
@@ -206,4 +259,18 @@ def cancel_button() -> InlineKeyboardMarkup:
     """Кнопка отмены"""
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="menu_main"))
+    return builder.as_markup()
+
+def message_source_kb() -> InlineKeyboardMarkup:
+    """Выбор источника сообщений для рассылки"""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📝 Использовать шаблоны", callback_data="msg_source_templates")
+    )
+    builder.row(
+        InlineKeyboardButton(text="✏️ Написать свой текст", callback_data="msg_source_custom")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔙 Отмена", callback_data="menu_actions")
+    )
     return builder.as_markup()

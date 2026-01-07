@@ -1,16 +1,65 @@
+# Environment
 .env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# Telegram Sessions
 *.session
 *.session-journal
+sessions/
+
+# Database
+*.db
+*.db-journal
 bot_data.db
 bot_data.db-journal
-sessions/
-__pycache__/
-*.pyc
-*.pyo
+
+# Logs
 *.log
-.DS_Store
+logs/
+
+# Audio files
 audio/
+
+# IDE
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+.cache/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Project specific
+bot.db
+templates.json.bak

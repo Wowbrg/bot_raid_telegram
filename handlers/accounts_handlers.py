@@ -37,6 +37,8 @@ class AddAccountStates(StatesGroup):
 @router.callback_query(F.data == "menu_accounts")
 async def menu_accounts(callback: CallbackQuery):
     """Меню аккаунтов"""
+    await callback.answer()
+
     accounts = await db.get_all_accounts()
     total = len(accounts)
     active = len([a for a in accounts if a['status'] == 'active'])
@@ -57,18 +59,19 @@ async def menu_accounts(callback: CallbackQuery):
         reply_markup=accounts_menu_kb(),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 # === СПИСОК АККАУНТОВ ===
 
 @router.callback_query(F.data == "accounts_list")
 async def accounts_list(callback: CallbackQuery):
     """Первая страница списка аккаунтов"""
+    await callback.answer()
     await show_accounts_page(callback, 1)
 
 @router.callback_query(F.data.startswith("accounts_page_"))
 async def accounts_page(callback: CallbackQuery):
     """Переход на страницу списка"""
+    await callback.answer()
     page = int(callback.data.split("_")[-1])
     await show_accounts_page(callback, page)
 
@@ -81,7 +84,6 @@ async def show_accounts_page(callback: CallbackQuery, page: int):
             "📱 У вас пока нет аккаунтов.\n\nДобавьте первый аккаунт!",
             reply_markup=back_button("menu_accounts")
         )
-        await callback.answer()
         return
 
     # Пагинация
@@ -123,13 +125,14 @@ async def show_accounts_page(callback: CallbackQuery, page: int):
         ),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 # === ДОБАВЛЕНИЕ АККАУНТА ===
 
 @router.callback_query(F.data == "accounts_add")
 async def accounts_add(callback: CallbackQuery, state: FSMContext):
     """Начать добавление аккаунта"""
+    await callback.answer()
+
     await callback.message.edit_text(
         "📱 <b>Добавление нового аккаунта</b>\n\n"
         "Отправьте номер телефона в международном формате.\n"
@@ -138,7 +141,6 @@ async def accounts_add(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     await state.set_state(AddAccountStates.phone)
-    await callback.answer()
 
 @router.message(StateFilter(AddAccountStates.phone))
 async def process_phone(message: Message, state: FSMContext):
@@ -165,7 +167,11 @@ async def process_phone(message: Message, state: FSMContext):
     result = await account_manager.add_new_account(phone)
 
     if result['status'] == 'code_sent':
-        await state.update_data(phone=phone, session_name=result['session_name'])
+        await state.update_data(
+            phone=phone,
+            session_name=result['session_name'],
+            phone_code_hash=result['phone_code_hash']
+        )
         await state.set_state(AddAccountStates.code)
         await msg.edit_text(
             "📱 <b>Код отправлен!</b>\n\n"
@@ -202,9 +208,14 @@ async def process_code(message: Message, state: FSMContext):
 
     msg = await message.answer("⏳ Проверка кода...")
 
-    result = await account_manager.verify_code(data['phone'], code)
+    result = await account_manager.verify_code(
+        data['phone'],
+        code,
+        data['phone_code_hash']
+    )
 
     if result['status'] == 'password_required':
+        await state.update_data(last_code=code)
         await state.set_state(AddAccountStates.password)
         await msg.edit_text(
             "🔐 <b>Требуется пароль 2FA</b>\n\n"
@@ -244,7 +255,12 @@ async def process_password(message: Message, state: FSMContext):
     # Получаем последний код из данных состояния
     code = data.get('last_code', '')
 
-    result = await account_manager.verify_code(data['phone'], code, password)
+    result = await account_manager.verify_code(
+        data['phone'],
+        code,
+        data['phone_code_hash'],
+        password
+    )
 
     if result['status'] == 'success':
         await state.clear()
@@ -267,7 +283,7 @@ async def accounts_health(callback: CallbackQuery):
     """Проверка состояния всех аккаунтов"""
     await callback.answer("⏳ Проверка аккаунтов...", show_alert=False)
 
-    accounts = await db.get_all_accounts(status='active')
+    accounts = await account_manager.get_valid_accounts(status='active')
 
     if not accounts:
         await callback.message.edit_text(
@@ -281,7 +297,7 @@ async def accounts_health(callback: CallbackQuery):
     )
 
     results = []
-    for acc in accounts[:10]:  # Ограничиваем 10 аккаунтами за раз
+    for acc in accounts:  # Проверяем все аккаунты
         health = await account_manager.check_account_health(acc['id'])
         results.append({
             'id': acc['id'],
@@ -314,9 +330,17 @@ async def accounts_health(callback: CallbackQuery):
 @router.callback_query(F.data == "accounts_sessions")
 async def accounts_sessions_menu(callback: CallbackQuery):
     """Меню управления сессиями"""
+    await callback.answer()
+
     from keyboards import InlineKeyboardBuilder, InlineKeyboardButton
 
     builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🔄 Восстановить unauthorized аккаунты", callback_data="sessions_reactivate")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🧹 Очистка недействительных аккаунтов", callback_data="sessions_cleanup_invalid")
+    )
     builder.row(
         InlineKeyboardButton(text="🗑 Удалить чужие сессии (все аккаунты)", callback_data="sessions_clean_all")
     )
@@ -330,6 +354,8 @@ async def accounts_sessions_menu(callback: CallbackQuery):
 Здесь вы можете управлять активными сессиями аккаунтов.
 
 <b>Функции:</b>
+• Восстановление аккаунтов со статусом 'unauthorized'
+• Очистка недействительных аккаунтов
 • Удаление всех других сессий (кроме текущей) со всех аккаунтов
 • Защита от несанкционированного доступа
 
@@ -341,14 +367,88 @@ async def accounts_sessions_menu(callback: CallbackQuery):
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
     )
-    await callback.answer()
+
+@router.callback_query(F.data == "sessions_reactivate")
+async def sessions_reactivate(callback: CallbackQuery):
+    """Восстановление unauthorized аккаунтов"""
+    await callback.answer("⏳ Попытка восстановления...", show_alert=False)
+
+    msg = await callback.message.edit_text(
+        "🔄 Проверка и восстановление unauthorized аккаунтов..."
+    )
+
+    result = await account_manager.reactivate_unauthorized_accounts()
+
+    text = "🔄 <b>Восстановление завершено!</b>\n\n"
+
+    if result['reactivated']:
+        text += f"✅ <b>Восстановлено: {len(result['reactivated'])}</b>\n"
+        for acc in result['reactivated']:
+            text += f"  • ID {acc['id']}: {acc['phone']}\n"
+        text += "\n"
+    else:
+        text += "ℹ️ Нет аккаунтов для восстановления\n\n"
+
+    if result['failed']:
+        text += f"❌ <b>Не удалось восстановить: {len(result['failed'])}</b>\n"
+        for acc in result['failed'][:5]:
+            text += f"  • ID {acc['id']}: {acc['phone']} - {acc['error']}\n"
+        if len(result['failed']) > 5:
+            text += f"  ... и еще {len(result['failed']) - 5}\n"
+
+    await msg.edit_text(
+        text,
+        reply_markup=back_button("accounts_sessions"),
+        parse_mode="HTML"
+    )
+
+@router.callback_query(F.data == "sessions_cleanup_invalid")
+async def sessions_cleanup_invalid(callback: CallbackQuery):
+    """Очистка недействительных аккаунтов"""
+    await callback.answer("⏳ Очистка...", show_alert=False)
+
+    msg = await callback.message.edit_text(
+        "🧹 Проверка и очистка недействительных аккаунтов..."
+    )
+
+    result = await account_manager.cleanup_invalid_accounts()
+
+    text = "🧹 <b>Очистка завершена!</b>\n\n"
+
+    if result.get('removed_temp'):
+        text += f"🗑 <b>Удалено временных записей: {len(result['removed_temp'])}</b>\n"
+        for acc in result['removed_temp'][:5]:
+            text += f"  • ID {acc['id']}: {acc['phone']}\n"
+        if len(result['removed_temp']) > 5:
+            text += f"  ... и еще {len(result['removed_temp']) - 5}\n"
+        text += "\n"
+
+    if result['marked_error']:
+        text += f"⚠️ <b>Помечено как ошибка: {len(result['marked_error'])}</b>\n"
+        for acc in result['marked_error'][:5]:
+            text += f"  • ID {acc['id']}: {acc['phone']}\n"
+        if len(result['marked_error']) > 5:
+            text += f"  ... и еще {len(result['marked_error']) - 5}\n"
+        text += "\n"
+
+    if not result.get('removed_temp') and not result['marked_error']:
+        text += "✅ Все аккаунты валидны!\n\n"
+
+    if result['removed_banned']:
+        text += f"🗑 <b>Удалено заблокированных: {len(result['removed_banned'])}</b>\n"
+
+    await msg.edit_text(
+        text,
+        reply_markup=back_button("accounts_sessions"),
+        parse_mode="HTML"
+    )
 
 @router.callback_query(F.data == "sessions_clean_all")
 async def sessions_clean_all(callback: CallbackQuery):
     """Удалить чужие сессии со всех аккаунтов"""
     await callback.answer("⏳ Очистка сессий...", show_alert=False)
 
-    accounts = await db.get_all_accounts(status='active')
+    accounts = await account_manager.get_valid_accounts(status='active')
 
     if not accounts:
         await callback.message.edit_text(
@@ -381,5 +481,51 @@ async def sessions_clean_all(callback: CallbackQuery):
     await msg.edit_text(
         text,
         reply_markup=back_button("accounts_sessions"),
+        parse_mode="HTML"
+    )
+
+# === СИНХРОНИЗАЦИЯ СЕССИЙ ===
+
+@router.callback_query(F.data == "accounts_sync")
+async def accounts_sync(callback: CallbackQuery):
+    """Синхронизация файлов сессий с базой данных"""
+    await callback.answer("⏳ Синхронизация...", show_alert=False)
+
+    msg = await callback.message.edit_text(
+        "🔄 Сканирование папки сессий и синхронизация с базой данных..."
+    )
+
+    result = await account_manager.sync_sessions_with_db()
+
+    if result['status'] == 'error':
+        await msg.edit_text(
+            f"❌ Ошибка: {result['message']}",
+            reply_markup=back_button("menu_accounts")
+        )
+        return
+
+    # Формируем отчет
+    text = "🔄 <b>Синхронизация завершена!</b>\n\n"
+    text += f"📁 Всего файлов сессий: {result['total_files']}\n\n"
+
+    if result['added']:
+        text += f"✅ <b>Добавлено аккаунтов: {len(result['added'])}</b>\n"
+        for acc in result['added']:
+            text += f"  • ID {acc['id']}: {acc['phone']}\n"
+        text += "\n"
+
+    if result['skipped']:
+        text += f"⏭ Пропущено (уже в БД): {len(result['skipped'])}\n\n"
+
+    if result['errors']:
+        text += f"❌ <b>Ошибок: {len(result['errors'])}</b>\n"
+        for err in result['errors'][:5]:  # Показываем только первые 5 ошибок
+            text += f"  • {err['session']}: {err['error'][:50]}\n"
+        if len(result['errors']) > 5:
+            text += f"  ... и еще {len(result['errors']) - 5} ошибок\n"
+
+    await msg.edit_text(
+        text,
+        reply_markup=back_button("menu_accounts"),
         parse_mode="HTML"
     )
