@@ -366,6 +366,12 @@ async def _play_media_for_account(
             # Используем MediaStream для pytgcalls 2.x/3.x
             from pytgcalls.types import MediaStream
 
+            # Убеждаемся, что join_as установлен правильно перед вызовом play
+            # Устанавливаем на уровне _bind_client, который используется в telethon_client
+            if hasattr(group_call, '_app') and hasattr(group_call._app, '_bind_client'):
+                group_call._app._bind_client.join_as = me_peer
+                logger.info(f"[Account {account_id}] join_as установлен на _bind_client")
+
             if enable_video and audio_path and video_path:
                 # Аудио + Видео
                 logger.info(f"[Account {account_id}] Воспроизведение аудио+видео: {os.path.basename(audio_path)}, {os.path.basename(video_path)}")
