@@ -324,8 +324,6 @@ async def _play_media_for_account(
             if PYTGCALLS_VERSION == "3.x":
                 # Для pytgcalls 3.x используем PyTgCalls
                 from pytgcalls import PyTgCalls
-                from pytgcalls.types import MediaStream
-                from pytgcalls.types.stream import Stream, AudioStream, VideoStream
 
                 group_call = PyTgCalls(client)
                 # Запускаем клиент
@@ -346,9 +344,8 @@ async def _play_media_for_account(
             logger.info(f"[Account {account_id}] Присоединение к существующему голосовому чату в {chat_id}")
 
             if PYTGCALLS_VERSION == "3.x":
-                # Для pytgcalls 3.x - присоединяемся и играем одновременно
+                # Для pytgcalls 3.x - используем MediaStream и метод play()
                 from pytgcalls.types import MediaStream
-                from pytgcalls.types.stream import Stream, AudioStream, VideoStream
 
                 if enable_video and audio_path and video_path:
                     # Аудио + Видео
@@ -356,9 +353,8 @@ async def _play_media_for_account(
                     await group_call.play(
                         chat_id,
                         MediaStream(
-                            video_path,
-                            video_parameters=VideoStream(),
-                            audio_parameters=AudioStream()
+                            audio_path,
+                            video_path
                         )
                     )
                     result['media_played'] = f'audio: {os.path.basename(audio_path)}, video: {os.path.basename(video_path)}'
@@ -369,7 +365,7 @@ async def _play_media_for_account(
                         chat_id,
                         MediaStream(
                             audio_path,
-                            audio_parameters=AudioStream()
+                            video_flags=MediaStream.Flags.IGNORE
                         )
                     )
                     result['media_played'] = f'audio: {os.path.basename(audio_path)}'
@@ -414,7 +410,7 @@ async def _play_media_for_account(
             logger.error(f"[Account {account_id}] {result['error']}", exc_info=True)
             try:
                 if PYTGCALLS_VERSION == "3.x":
-                    await group_call.leave_call(chat_id)
+                    await group_call.leave_group_call(chat_id)
                 else:
                     await group_call.stop()
             except:
@@ -439,7 +435,7 @@ async def _play_media_for_account(
         logger.info(f"[Account {account_id}] Выход из голосового чата")
         try:
             if PYTGCALLS_VERSION == "3.x":
-                await group_call.leave_call(chat_id)
+                await group_call.leave_group_call(chat_id)
             else:
                 await group_call.stop()
             logger.info(f"[Account {account_id}] Успешно вышли из голосового чата")
@@ -461,7 +457,7 @@ async def _play_media_for_account(
             try:
                 if PYTGCALLS_VERSION == "3.x":
                     try:
-                        await group_call.leave_call(chat_id)
+                        await group_call.leave_group_call(chat_id)
                     except:
                         pass
                 else:
