@@ -1,10 +1,15 @@
 import asyncio
 import os
 import random
+import logging
 from typing import List, Dict, Optional
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, UserAlreadyParticipantError
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
 from modules.account_manager import AccountManager
 import config
+
+logger = logging.getLogger(__name__)
 
 # Попытка импорта pytgcalls с обработкой разных версий
 PYTGCALLS_AVAILABLE = False
@@ -226,6 +231,49 @@ async def _play_random(
     return processed_results
 
 
+async def _join_group_if_needed(client, group_link: str):
+    """
+    Присоединяется к группе, если клиент еще не в ней
+    """
+    # Очищаем ссылку от параметров (?videochat и т.д.)
+    clean_link = group_link.split('?')[0]
+
+    try:
+        # Пробуем получить entity
+        entity = await client.get_entity(clean_link)
+
+        # Проверяем, состоит ли клиент в группе
+        try:
+            participant = await client.get_permissions(entity)
+            logger.info(f"Клиент уже в группе {entity.id}")
+            return entity
+        except:
+            # Не в группе, нужно присоединиться
+            pass
+
+        # Присоединяемся к группе
+        if '/joinchat/' in clean_link or '/+' in clean_link:
+            # Пригласительная ссылка
+            invite_hash = clean_link.split('/')[-1].replace('+', '')
+            logger.info(f"Присоединение по пригласительной ссылке: {invite_hash}")
+            await client(ImportChatInviteRequest(invite_hash))
+        else:
+            # Публичная группа
+            logger.info(f"Присоединение к публичной группе: {entity.username}")
+            await client(JoinChannelRequest(entity))
+
+        logger.info(f"Успешно присоединились к группе {entity.id}")
+        return entity
+
+    except UserAlreadyParticipantError:
+        logger.info(f"Клиент уже в группе")
+        entity = await client.get_entity(clean_link)
+        return entity
+    except Exception as e:
+        logger.error(f"Ошибка присоединения к группе: {str(e)}")
+        raise
+
+
 async def _play_media_for_account(
     account_manager: AccountManager,
     account_id: int,
@@ -249,22 +297,28 @@ async def _play_media_for_account(
     group_call = None
 
     try:
+        logger.info(f"[Account {account_id}] Начало подключения к голосовому чату")
+
         # Получаем Telethon клиент
         client = await account_manager.get_client(account_id)
         if not client:
             result['error'] = 'Не удалось подключиться к аккаунту'
+            logger.error(f"[Account {account_id}] {result['error']}")
             return result
 
-        # Получаем entity группы
+        # Присоединяемся к группе, если нужно, и получаем entity
         try:
-            entity = await client.get_entity(group_link)
+            entity = await _join_group_if_needed(client, group_link)
             chat_id = entity.id
+            logger.info(f"[Account {account_id}] Группа найдена: {chat_id}")
         except Exception as e:
-            result['error'] = f'Группа не найдена: {str(e)}'
+            result['error'] = f'Не удалось присоединиться к группе: {str(e)}'
+            logger.error(f"[Account {account_id}] {result['error']}")
             return result
 
         # Создаем GroupCall через фабрику (поддержка разных версий)
         try:
+            logger.info(f"[Account {account_id}] Создание группового вызова (pytgcalls {PYTGCALLS_VERSION})")
             if PYTGCALLS_VERSION == "3.x":
                 # Для pytgcalls 3.x (новая версия)
                 from pytgcalls import PyTgCalls
@@ -274,26 +328,33 @@ async def _play_media_for_account(
             else:
                 # Для pytgcalls 2.x
                 group_call = GroupCallFactory(client).get_file_group_call()
+                logger.info(f"[Account {account_id}] GroupCall создан")
         except Exception as e:
             result['error'] = f'Ошибка создания группового вызова: {str(e)}'
+            logger.error(f"[Account {account_id}] {result['error']}")
             return result
 
         # Присоединяемся к голосовому чату
         try:
+            logger.info(f"[Account {account_id}] Присоединение к голосовому чату {chat_id}")
             if PYTGCALLS_VERSION == "3.x":
                 # API для 3.x отличается
                 result['error'] = 'pytgcalls 3.x пока не поддерживается полностью'
+                logger.error(f"[Account {account_id}] {result['error']}")
                 return result
             else:
                 await group_call.start(chat_id)
+                logger.info(f"[Account {account_id}] Успешно присоединились к голосовому чату")
         except Exception as e:
             result['error'] = f'Не удалось присоединиться к голосовому чату: {str(e)}'
+            logger.error(f"[Account {account_id}] {result['error']}")
             return result
 
         # Воспроизводим медиа
         try:
             if enable_video and audio_path and video_path:
                 # Аудио + Видео
+                logger.info(f"[Account {account_id}] Воспроизведение аудио+видео: {audio_path}, {video_path}")
                 await group_call.play_file(
                     audio_path,
                     video_path=video_path,
@@ -302,17 +363,21 @@ async def _play_media_for_account(
                 result['media_played'] = f'audio: {os.path.basename(audio_path)}, video: {os.path.basename(video_path)}'
             elif audio_path:
                 # Только аудио
+                logger.info(f"[Account {account_id}] Воспроизведение аудио: {audio_path}")
                 await group_call.play_file(audio_path, repeat=False)
                 result['media_played'] = f'audio: {os.path.basename(audio_path)}'
             else:
                 result['error'] = 'Не указан медиафайл'
+                logger.error(f"[Account {account_id}] {result['error']}")
                 await group_call.stop()
                 return result
 
             result['success'] = True
             result['action'] = 'joined_and_playing'
+            logger.info(f"[Account {account_id}] Воспроизведение началось успешно")
         except Exception as e:
             result['error'] = f'Ошибка воспроизведения: {str(e)}'
+            logger.error(f"[Account {account_id}] {result['error']}")
             try:
                 await group_call.stop()
             except:
@@ -322,29 +387,37 @@ async def _play_media_for_account(
         # Ожидание завершения
         if duration > 0:
             # Фиксированная длительность
+            logger.info(f"[Account {account_id}] Воспроизведение на {duration} секунд")
             wait_time = 0
             while wait_time < duration and not stop_flag.is_set():
                 await asyncio.sleep(1)
                 wait_time += 1
         else:
             # До конца файла или до stop_flag
+            logger.info(f"[Account {account_id}] Воспроизведение до остановки")
             while not stop_flag.is_set():
                 # Проверяем, играет ли еще файл
                 if not group_call.is_connected:
+                    logger.info(f"[Account {account_id}] GroupCall отключился")
                     break
                 await asyncio.sleep(1)
 
         # Выходим из голосового чата
+        logger.info(f"[Account {account_id}] Выход из голосового чата")
         try:
             await group_call.stop()
+            logger.info(f"[Account {account_id}] Успешно вышли из голосового чата")
         except Exception as e:
             result['error'] = f'Ошибка выхода: {str(e)}'
+            logger.error(f"[Account {account_id}] {result['error']}")
 
     except FloodWaitError as e:
         result['error'] = f'Флуд-контроль: {e.seconds} сек'
+        logger.error(f"[Account {account_id}] {result['error']}")
 
     except Exception as e:
         result['error'] = f'Неожиданная ошибка: {str(e)}'
+        logger.error(f"[Account {account_id}] {result['error']}", exc_info=True)
 
     finally:
         # Очистка ресурсов
@@ -354,6 +427,7 @@ async def _play_media_for_account(
             except:
                 pass
 
+    logger.info(f"[Account {account_id}] Завершение работы. Success={result['success']}")
     return result
 
 
