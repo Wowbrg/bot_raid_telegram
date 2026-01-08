@@ -7,7 +7,10 @@ import json
 
 from keyboards import (
     actions_menu_kb, select_accounts_kb, confirm_action_kb,
-    back_button, cancel_button
+    back_button, cancel_button,
+    get_playback_mode_keyboard, get_audio_files_keyboard,
+    get_video_files_keyboard, get_enable_video_keyboard,
+    get_duration_mode_keyboard
 )
 from database import Database
 from modules.account_manager import AccountManager
@@ -33,6 +36,13 @@ class ActionStates(StatesGroup):
     select_accounts = State()
     configure = State()
     confirm = State()
+    # Голосовой чат состояния
+    voice_group_link = State()
+    voice_playback_mode = State()
+    voice_select_audio = State()
+    voice_enable_video = State()
+    voice_select_video = State()
+    voice_duration = State()
 
 # === МЕНЮ ДЕЙСТВИЙ ===
 
@@ -615,16 +625,14 @@ async def msg_source_custom(callback: CallbackQuery, state: FSMContext):
 # === ГОЛОСОВЫЕ ВЫЗОВЫ ===
 
 async def configure_voice(callback: CallbackQuery, state: FSMContext):
-    """Настройка голосовых вызовов"""
+    """Настройка голосовых вызовов - Шаг 1: Ссылка на группу"""
     text = """
 📞 <b>Настройка голосовых вызовов</b>
 
-Отправьте ссылку на группу в формате:
-
-<code>ссылка_группы</code>
+Отправьте ссылку на группу, в которой нужно запустить голосовой чат:
 
 <b>Пример:</b>
-<code>https://t.me/group</code>
+<code>https://t.me/your_group</code>
 """
 
     await callback.message.edit_text(
@@ -632,7 +640,269 @@ async def configure_voice(callback: CallbackQuery, state: FSMContext):
         reply_markup=cancel_button(),
         parse_mode="HTML"
     )
-    await state.set_state(ActionStates.configure)
+    await state.set_state(ActionStates.voice_group_link)
+
+@router.message(StateFilter(ActionStates.voice_group_link))
+async def voice_group_link_received(message: Message, state: FSMContext):
+    """Получена ссылка на группу - Шаг 2: Выбор режима воспроизведения"""
+    group_link = message.text.strip()
+
+    # Сохраняем ссылку
+    await state.update_data(group_link=group_link)
+
+    text = """
+🎵 <b>Выберите режим воспроизведения:</b>
+
+<b>Синхронно</b> - все аккаунты одновременно воспроизводят один файл
+<b>По очереди</b> - аккаунты играют файл последовательно (relay)
+<b>Случайные</b> - каждый аккаунт играет случайный файл из папки
+"""
+
+    await message.answer(
+        text,
+        reply_markup=get_playback_mode_keyboard(),
+        parse_mode="HTML"
+    )
+    await state.set_state(ActionStates.voice_playback_mode)
+
+@router.callback_query(F.data.startswith("playback_mode_"))
+async def playback_mode_selected(callback: CallbackQuery, state: FSMContext):
+    """Выбран режим воспроизведения - Шаг 3: Выбор аудиофайла"""
+    await callback.answer()
+
+    playback_mode = callback.data.replace("playback_mode_", "")
+    await state.update_data(playback_mode=playback_mode)
+
+    # Получаем список аудиофайлов
+    from modules.voice_calls import get_available_audio_files
+    audio_files = get_available_audio_files()
+
+    if not audio_files and playback_mode != 'random':
+        await callback.message.edit_text(
+            "❌ <b>Ошибка:</b> Нет аудиофайлов в папке audio/\n\n"
+            "Добавьте аудиофайлы (MP3, WAV, OGG, M4A, FLAC) в папку audio/ и попробуйте снова.",
+            reply_markup=back_button("menu_actions"),
+            parse_mode="HTML"
+        )
+        return
+
+    mode_names = {
+        'sync': 'Синхронно',
+        'relay': 'По очереди',
+        'random': 'Случайные файлы'
+    }
+
+    if playback_mode == 'random':
+        # Для random режима сразу переходим к вопросу о видео
+        text = f"""
+✅ <b>Режим:</b> {mode_names.get(playback_mode, playback_mode)}
+
+📹 <b>Включить видео?</b>
+
+Если включите видео, аккаунты зайдут в видеочат и будут транслировать видеофайл со звуком.
+"""
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_enable_video_keyboard(),
+            parse_mode="HTML"
+        )
+        await state.set_state(ActionStates.voice_enable_video)
+    else:
+        # Показываем список аудиофайлов
+        text = f"""
+✅ <b>Режим:</b> {mode_names.get(playback_mode, playback_mode)}
+
+🎵 <b>Выберите аудиофайл:</b>
+"""
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_audio_files_keyboard(audio_files),
+            parse_mode="HTML"
+        )
+        await state.set_state(ActionStates.voice_select_audio)
+
+@router.callback_query(F.data.startswith("audio_file_"))
+async def audio_file_selected(callback: CallbackQuery, state: FSMContext):
+    """Выбран аудиофайл - Шаг 4: Включить видео?"""
+    await callback.answer()
+
+    audio_file = callback.data.replace("audio_file_", "")
+    await state.update_data(audio_file=audio_file)
+
+    text = f"""
+✅ <b>Аудиофайл:</b> {audio_file}
+
+📹 <b>Включить видео?</b>
+
+Если включите видео, аккаунты зайдут в видеочат и будут транслировать видеофайл вместе с аудио.
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_enable_video_keyboard(),
+        parse_mode="HTML"
+    )
+    await state.set_state(ActionStates.voice_enable_video)
+
+@router.callback_query(F.data.startswith("enable_video_"))
+async def enable_video_selected(callback: CallbackQuery, state: FSMContext):
+    """Выбрано включение видео - Шаг 5: Выбор видеофайла (если нужно) или длительность"""
+    await callback.answer()
+
+    enable_video = callback.data == "enable_video_yes"
+    await state.update_data(enable_video=enable_video)
+
+    if enable_video:
+        # Получаем список видеофайлов
+        from modules.voice_calls import get_available_video_files
+        video_files = get_available_video_files()
+
+        if not video_files:
+            await callback.message.edit_text(
+                "❌ <b>Ошибка:</b> Нет видеофайлов в папке video/\n\n"
+                "Добавьте видеофайлы (MP4, AVI, MKV, MOV, WebM) в папку video/ и попробуйте снова.",
+                reply_markup=back_button("menu_actions"),
+                parse_mode="HTML"
+            )
+            return
+
+        text = """
+🎬 <b>Выберите видеофайл:</b>
+"""
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_video_files_keyboard(video_files),
+            parse_mode="HTML"
+        )
+        await state.set_state(ActionStates.voice_select_video)
+    else:
+        # Переходим к выбору длительности
+        await ask_duration(callback.message, state)
+
+@router.callback_query(F.data.startswith("video_file_"))
+async def video_file_selected(callback: CallbackQuery, state: FSMContext):
+    """Выбран видеофайл - Шаг 6: Длительность"""
+    await callback.answer()
+
+    video_file = callback.data.replace("video_file_", "")
+    await state.update_data(video_file=video_file)
+
+    await ask_duration(callback.message, state)
+
+async def ask_duration(message: Message, state: FSMContext):
+    """Спрашиваем о длительности"""
+    text = """
+⏱️ <b>Длительность пребывания в чате:</b>
+
+Как долго аккаунты должны оставаться в голосовом чате?
+"""
+
+    await message.edit_text(
+        text,
+        reply_markup=get_duration_mode_keyboard(),
+        parse_mode="HTML"
+    )
+    await state.set_state(ActionStates.voice_duration)
+
+@router.callback_query(F.data.startswith("duration_mode_"))
+async def duration_mode_selected(callback: CallbackQuery, state: FSMContext):
+    """Выбран режим длительности"""
+    await callback.answer()
+
+    duration_mode = callback.data.replace("duration_mode_", "")
+
+    if duration_mode == "infinite":
+        # Бесконечный режим
+        await state.update_data(duration=0)
+        await show_voice_summary(callback, state)
+    else:
+        # Запрашиваем пользовательское время
+        text = """
+⏱️ <b>Укажите время в секундах:</b>
+
+Например: <code>60</code> (1 минута), <code>300</code> (5 минут)
+"""
+        await callback.message.edit_text(
+            text,
+            reply_markup=cancel_button(),
+            parse_mode="HTML"
+        )
+        # Остаемся в том же состоянии, но ждем текстовое сообщение
+
+@router.message(StateFilter(ActionStates.voice_duration))
+async def duration_value_received(message: Message, state: FSMContext):
+    """Получено значение длительности"""
+    try:
+        duration = int(message.text.strip())
+        if duration < 0:
+            raise ValueError
+
+        await state.update_data(duration=duration)
+        await show_voice_summary(message, state)
+
+    except ValueError:
+        await message.answer(
+            "❌ Неверный формат. Укажите положительное число секунд.",
+            reply_markup=cancel_button()
+        )
+
+async def show_voice_summary(message_or_callback, state: FSMContext):
+    """Показываем итоговую сводку и подтверждение"""
+    data = await state.get_data()
+
+    playback_mode = data.get('playback_mode', 'sync')
+    audio_file = data.get('audio_file', 'Случайный')
+    enable_video = data.get('enable_video', False)
+    video_file = data.get('video_file', '-')
+    duration = data.get('duration', 0)
+    group_link = data.get('group_link', '')
+
+    mode_names = {
+        'sync': '🎵 Синхронно (все вместе)',
+        'relay': '🔁 По очереди (relay)',
+        'random': '🎲 Случайные файлы'
+    }
+
+    duration_text = "♾️ До ручной остановки" if duration == 0 else f"⏱️ {duration} секунд"
+
+    text = f"""
+📞 <b>Сводка настроек голосового чата</b>
+
+<b>Группа:</b> {group_link}
+<b>Режим:</b> {mode_names.get(playback_mode, playback_mode)}
+<b>Аудио:</b> {audio_file}
+<b>Видео:</b> {'📹 Да (' + video_file + ')' if enable_video else '🎵 Нет'}
+<b>Длительность:</b> {duration_text}
+
+Готовы запустить?
+"""
+
+    # Сохраняем конфигурацию для запуска задачи
+    config = {
+        'group_link': group_link,
+        'audio_file': audio_file if audio_file != 'Случайный' else None,
+        'playback_mode': playback_mode,
+        'enable_video': enable_video,
+        'video_file': video_file if enable_video else None,
+        'duration': duration
+    }
+
+    await state.update_data(action_type='voice_call', config=config)
+
+    if isinstance(message_or_callback, Message):
+        await message_or_callback.answer(
+            text,
+            reply_markup=confirm_action_kb('voice_call'),
+            parse_mode="HTML"
+        )
+    else:
+        await message_or_callback.message.edit_text(
+            text,
+            reply_markup=confirm_action_kb('voice_call'),
+            parse_mode="HTML"
+        )
+
+    await state.set_state(ActionStates.confirm)
 
 # === РЕАКЦИИ ===
 

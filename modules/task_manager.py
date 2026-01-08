@@ -96,8 +96,8 @@ class TaskManager:
                 )
 
             elif task_type == 'voice_call':
-                from modules.voice_calls import join_voice_call
-                results = await join_voice_call(
+                from modules.voice_calls import join_voice_chat
+                results = await join_voice_chat(
                     self.account_manager,
                     account_ids,
                     config,

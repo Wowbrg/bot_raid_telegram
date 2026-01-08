@@ -274,3 +274,82 @@ def message_source_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🔙 Отмена", callback_data="menu_actions")
     )
     return builder.as_markup()
+
+# === ГОЛОСОВОЙ ЧАТ ===
+
+def get_playback_mode_keyboard() -> InlineKeyboardMarkup:
+    """Выбор режима воспроизведения"""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🎵 Синхронно (все вместе)", callback_data="playback_mode_sync")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔁 По очереди (relay)", callback_data="playback_mode_relay")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🎲 Случайные файлы", callback_data="playback_mode_random")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔙 Отмена", callback_data="menu_actions")
+    )
+    return builder.as_markup()
+
+def get_audio_files_keyboard(files: list) -> InlineKeyboardMarkup:
+    """Клавиатура со списком аудиофайлов"""
+    builder = InlineKeyboardBuilder()
+
+    for filename in files[:10]:  # Ограничиваем 10 файлами для удобства
+        builder.row(
+            InlineKeyboardButton(
+                text=f"🎵 {filename[:40]}",
+                callback_data=f"audio_file_{filename}"
+            )
+        )
+
+    builder.row(
+        InlineKeyboardButton(text="❌ Отмена", callback_data="menu_actions")
+    )
+    return builder.as_markup()
+
+def get_video_files_keyboard(files: list) -> InlineKeyboardMarkup:
+    """Клавиатура со списком видеофайлов"""
+    builder = InlineKeyboardBuilder()
+
+    for filename in files[:10]:  # Ограничиваем 10 файлами
+        builder.row(
+            InlineKeyboardButton(
+                text=f"🎬 {filename[:40]}",
+                callback_data=f"video_file_{filename}"
+            )
+        )
+
+    builder.row(
+        InlineKeyboardButton(text="❌ Отмена", callback_data="menu_actions")
+    )
+    return builder.as_markup()
+
+def get_enable_video_keyboard() -> InlineKeyboardMarkup:
+    """Включить/выключить видео"""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📹 Да, с видео", callback_data="enable_video_yes"),
+        InlineKeyboardButton(text="🎵 Только аудио", callback_data="enable_video_no")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔙 Отмена", callback_data="menu_actions")
+    )
+    return builder.as_markup()
+
+def get_duration_mode_keyboard() -> InlineKeyboardMarkup:
+    """Выбор режима длительности"""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="♾️ До остановки", callback_data="duration_mode_infinite")
+    )
+    builder.row(
+        InlineKeyboardButton(text="⏱️ Указать время", callback_data="duration_mode_custom")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔙 Отмена", callback_data="menu_actions")
+    )
+    return builder.as_markup()
