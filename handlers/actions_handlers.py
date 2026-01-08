@@ -1027,8 +1027,28 @@ async def configure_cleanup(callback: CallbackQuery, state: FSMContext):
 # === ДОПОЛНИТЕЛЬНЫЕ ДЕЙСТВИЯ (упрощенные заглушки) ===
 
 @router.callback_query(F.data == "action_voice")
-async def action_voice(callback: CallbackQuery):
-    await callback.answer("⚠️ Функция в разработке", show_alert=True)
+async def action_voice(callback: CallbackQuery, state: FSMContext):
+    """Голосовой чат"""
+    await state.update_data(action_type='voice_call')
+
+    accounts = await account_manager.get_valid_accounts(status='active')
+    if not accounts:
+        await callback.answer("❌ Нет активных аккаунтов", show_alert=True)
+        return
+
+    await callback.answer()
+
+    text = """
+📞 <b>Голосовой чат</b>
+
+Сколько аккаунтов использовать?
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=select_accounts_kb(len(accounts)),
+        parse_mode="HTML"
+    )
 
 @router.callback_query(F.data == "action_reactions")
 async def action_reactions(callback: CallbackQuery, state: FSMContext):
