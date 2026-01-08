@@ -11,5 +11,5 @@ pydantic==2.5.3
 pyaes
 rsa
 cffi
-py-tgcalls==1.1.0
+pytgcalls>=2.0.0
 ffmpeg-python==0.2.0

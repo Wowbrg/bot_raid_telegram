@@ -3,14 +3,7 @@ import os
 import random
 from typing import List, Dict, Optional
 from telethon.errors import FloodWaitError
-from pytgcalls import PyTgCalls
-from pytgcalls.types import AudioPiped, VideoPiped, AudioVideoPiped
-from pytgcalls.types.input_stream import AudioParameters, VideoParameters
-from pytgcalls.exceptions import (
-    GroupCallNotFound,
-    AlreadyJoinedError,
-    NotInCallError
-)
+from pytgcalls import GroupCallFactory
 from modules.account_manager import AccountManager
 import config
 
@@ -223,7 +216,7 @@ async def _play_media_for_account(
         'media_played': None
     }
 
-    pytgcalls_client = None
+    group_call = None
 
     try:
         # Получаем Telethon клиент
@@ -240,45 +233,40 @@ async def _play_media_for_account(
             result['error'] = f'Группа не найдена: {str(e)}'
             return result
 
-        # Создаем PyTgCalls клиент
-        pytgcalls_client = PyTgCalls(client)
-        await pytgcalls_client.start()
+        # Создаем GroupCall через фабрику
+        group_call = GroupCallFactory(client).get_file_group_call()
 
-        # Подготавливаем медиа-стрим
-        if enable_video and audio_path and video_path:
-            # Аудио + Видео
-            stream = AudioVideoPiped(
-                audio_path,
-                video_path,
-                audio_parameters=AudioParameters(),
-                video_parameters=VideoParameters(
-                    width=1280,
-                    height=720,
-                    frame_rate=30
-                )
-            )
-            result['media_played'] = f'audio: {os.path.basename(audio_path)}, video: {os.path.basename(video_path)}'
-        elif audio_path:
-            # Только аудио
-            stream = AudioPiped(audio_path, audio_parameters=AudioParameters())
-            result['media_played'] = f'audio: {os.path.basename(audio_path)}'
-        else:
-            result['error'] = 'Не указан медиафайл'
+        # Присоединяемся к голосовому чату
+        try:
+            await group_call.start(chat_id)
+        except Exception as e:
+            result['error'] = f'Не удалось присоединиться к голосовому чату: {str(e)}'
             return result
 
-        # Присоединяемся к голосовому чату и начинаем воспроизведение
+        # Воспроизводим медиа
         try:
-            await pytgcalls_client.play(chat_id, stream)
+            if enable_video and audio_path and video_path:
+                # Аудио + Видео
+                await group_call.play_file(
+                    audio_path,
+                    video_path=video_path,
+                    repeat=False
+                )
+                result['media_played'] = f'audio: {os.path.basename(audio_path)}, video: {os.path.basename(video_path)}'
+            elif audio_path:
+                # Только аудио
+                await group_call.play_file(audio_path, repeat=False)
+                result['media_played'] = f'audio: {os.path.basename(audio_path)}'
+            else:
+                result['error'] = 'Не указан медиафайл'
+                await group_call.stop()
+                return result
+
             result['success'] = True
             result['action'] = 'joined_and_playing'
-        except AlreadyJoinedError:
-            result['error'] = 'Аккаунт уже в голосовом чате'
-            return result
-        except GroupCallNotFound:
-            result['error'] = 'Голосовой чат не найден или не активен'
-            return result
         except Exception as e:
             result['error'] = f'Ошибка воспроизведения: {str(e)}'
+            await group_call.stop()
             return result
 
         # Ожидание завершения
@@ -289,17 +277,16 @@ async def _play_media_for_account(
                 await asyncio.sleep(1)
                 wait_time += 1
         else:
-            # До конца файла (примерное время или бесконечно)
-            # В реальности нужно отслеживать событие окончания воспроизведения
-            # Для упрощения ждем stop_flag
+            # До конца файла или до stop_flag
             while not stop_flag.is_set():
+                # Проверяем, играет ли еще файл
+                if not group_call.is_connected:
+                    break
                 await asyncio.sleep(1)
 
         # Выходим из голосового чата
         try:
-            await pytgcalls_client.leave_call(chat_id)
-        except NotInCallError:
-            pass  # Уже вышли
+            await group_call.stop()
         except Exception as e:
             result['error'] = f'Ошибка выхода: {str(e)}'
 
@@ -311,9 +298,9 @@ async def _play_media_for_account(
 
     finally:
         # Очистка ресурсов
-        if pytgcalls_client:
+        if group_call:
             try:
-                await pytgcalls_client.stop()
+                await group_call.stop()
             except:
                 pass
 
