@@ -331,11 +331,12 @@ async def _play_media_for_account(
             # Создаем PyTgCalls клиент
             group_call = PyTgCalls(client)
 
-            # Устанавливаем default_join_as для присоединения от имени пользователя, а не канала
-            group_call._cache_user_peer = me
-
             # Запускаем клиент
             await group_call.start()
+
+            # Устанавливаем join_as для присоединения от имени пользователя, а не канала
+            group_call._bind_client.join_as = me
+
             logger.info(f"[Account {account_id}] PyTgCalls клиент запущен")
 
         except Exception as e:
