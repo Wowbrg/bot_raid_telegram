@@ -319,11 +319,17 @@ async def _play_media_for_account(
 
             from pytgcalls import PyTgCalls
 
-            # Создаем PyTgCalls клиент
-            group_call = PyTgCalls(client)
+            # Получаем ID текущего пользователя для установки default_join_as
+            me = await client.get_me()
+            logger.info(f"[Account {account_id}] Присоединение от имени пользователя {me.id}")
+
+            # Создаем PyTgCalls клиент с указанием default_join_as
+            # Передаем peer_id пользователя, чтобы присоединяться от его имени, а не от имени канала
+            from pytgcalls.types import InputPeerUser
+            group_call = PyTgCalls(client, default_join_as=InputPeerUser(user_id=me.id, access_hash=me.access_hash))
             await group_call.start()
 
-            logger.info(f"[Account {account_id}] PyTgCalls клиент запущен")
+            logger.info(f"[Account {account_id}] PyTgCalls клиент запущен с default_join_as={me.id}")
 
         except Exception as e:
             result['error'] = f'Ошибка инициализации pytgcalls: {str(e)}'
