@@ -325,8 +325,7 @@ async def _play_media_for_account(
 
             # Создаем PyTgCalls клиент с указанием default_join_as
             # Передаем peer_id пользователя, чтобы присоединяться от его имени, а не от имени канала
-            from pytgcalls.types import InputPeerUser
-            group_call = PyTgCalls(client, default_join_as=InputPeerUser(user_id=me.id, access_hash=me.access_hash))
+            group_call = PyTgCalls(client, default_join_as=me.id)
             await group_call.start()
 
             logger.info(f"[Account {account_id}] PyTgCalls клиент запущен с default_join_as={me.id}")
