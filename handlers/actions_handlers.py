@@ -708,6 +708,9 @@ async def playback_mode_selected(callback: CallbackQuery, state: FSMContext):
         )
         await state.set_state(ActionStates.voice_enable_video)
     else:
+        # Сохраняем список файлов в state для последующего использования
+        await state.update_data(available_audio_files=audio_files)
+
         # Показываем список аудиофайлов
         text = f"""
 ✅ <b>Режим:</b> {mode_names.get(playback_mode, playback_mode)}
@@ -726,7 +729,19 @@ async def audio_file_selected(callback: CallbackQuery, state: FSMContext):
     """Выбран аудиофайл - Шаг 4: Включить видео?"""
     await callback.answer()
 
-    audio_file = callback.data.replace("audio_file_", "")
+    # Получаем индекс файла
+    file_idx = int(callback.data.replace("audio_file_", ""))
+
+    # Получаем список файлов из state
+    data = await state.get_data()
+    audio_files = data.get('available_audio_files', [])
+
+    # Проверяем корректность индекса
+    if file_idx >= len(audio_files):
+        await callback.answer("❌ Ошибка выбора файла", show_alert=True)
+        return
+
+    audio_file = audio_files[file_idx]
     await state.update_data(audio_file=audio_file)
 
     text = f"""
@@ -766,6 +781,9 @@ async def enable_video_selected(callback: CallbackQuery, state: FSMContext):
             )
             return
 
+        # Сохраняем список файлов в state для последующего использования
+        await state.update_data(available_video_files=video_files)
+
         text = """
 🎬 <b>Выберите видеофайл:</b>
 """
@@ -784,7 +802,19 @@ async def video_file_selected(callback: CallbackQuery, state: FSMContext):
     """Выбран видеофайл - Шаг 6: Длительность"""
     await callback.answer()
 
-    video_file = callback.data.replace("video_file_", "")
+    # Получаем индекс файла
+    file_idx = int(callback.data.replace("video_file_", ""))
+
+    # Получаем список файлов из state
+    data = await state.get_data()
+    video_files = data.get('available_video_files', [])
+
+    # Проверяем корректность индекса
+    if file_idx >= len(video_files):
+        await callback.answer("❌ Ошибка выбора файла", show_alert=True)
+        return
+
+    video_file = video_files[file_idx]
     await state.update_data(video_file=video_file)
 
     await ask_duration(callback.message, state)

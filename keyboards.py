@@ -298,11 +298,11 @@ def get_audio_files_keyboard(files: list) -> InlineKeyboardMarkup:
     """Клавиатура со списком аудиофайлов"""
     builder = InlineKeyboardBuilder()
 
-    for filename in files[:10]:  # Ограничиваем 10 файлами для удобства
+    for idx, filename in enumerate(files[:10]):  # Ограничиваем 10 файлами для удобства
         builder.row(
             InlineKeyboardButton(
                 text=f"🎵 {filename[:40]}",
-                callback_data=f"audio_file_{filename}"
+                callback_data=f"audio_file_{idx}"
             )
         )
 
@@ -315,11 +315,11 @@ def get_video_files_keyboard(files: list) -> InlineKeyboardMarkup:
     """Клавиатура со списком видеофайлов"""
     builder = InlineKeyboardBuilder()
 
-    for filename in files[:10]:  # Ограничиваем 10 файлами
+    for idx, filename in enumerate(files[:10]):  # Ограничиваем 10 файлами
         builder.row(
             InlineKeyboardButton(
                 text=f"🎬 {filename[:40]}",
-                callback_data=f"video_file_{filename}"
+                callback_data=f"video_file_{idx}"
             )
         )
 
