@@ -295,6 +295,7 @@ async def _play_media_for_account(
     }
 
     group_call = None
+    chat_id = None
 
     try:
         logger.info(f"[Account {account_id}] Начало подключения к голосовому чату")
@@ -316,70 +317,106 @@ async def _play_media_for_account(
             logger.error(f"[Account {account_id}] {result['error']}")
             return result
 
-        # Создаем GroupCall через фабрику (поддержка разных версий)
+        # Создаем GroupCall клиент (НЕ создаем голосовой чат, а готовимся присоединиться)
         try:
-            logger.info(f"[Account {account_id}] Создание группового вызова (pytgcalls {PYTGCALLS_VERSION})")
+            logger.info(f"[Account {account_id}] Инициализация pytgcalls клиента (версия {PYTGCALLS_VERSION})")
+
             if PYTGCALLS_VERSION == "3.x":
-                # Для pytgcalls 3.x (новая версия)
+                # Для pytgcalls 3.x используем PyTgCalls
                 from pytgcalls import PyTgCalls
-                from pytgcalls.types import AudioPiped, VideoPiped
+                from pytgcalls.types import MediaStream
+                from pytgcalls.types.stream import Stream, AudioStream, VideoStream
+
                 group_call = PyTgCalls(client)
+                # Запускаем клиент
                 await group_call.start()
+                logger.info(f"[Account {account_id}] PyTgCalls клиент запущен")
+            else:
+                # Для pytgcalls 2.x используем GroupCallFactory
+                group_call = GroupCallFactory(client).get_file_group_call()
+                logger.info(f"[Account {account_id}] GroupCall клиент создан")
+
+        except Exception as e:
+            result['error'] = f'Ошибка инициализации pytgcalls: {str(e)}'
+            logger.error(f"[Account {account_id}] {result['error']}")
+            return result
+
+        # Присоединяемся к СУЩЕСТВУЮЩЕМУ голосовому чату и воспроизводим медиа
+        try:
+            logger.info(f"[Account {account_id}] Присоединение к существующему голосовому чату в {chat_id}")
+
+            if PYTGCALLS_VERSION == "3.x":
+                # Для pytgcalls 3.x - присоединяемся и играем одновременно
+                from pytgcalls.types import MediaStream
+                from pytgcalls.types.stream import Stream, AudioStream, VideoStream
+
+                if enable_video and audio_path and video_path:
+                    # Аудио + Видео
+                    logger.info(f"[Account {account_id}] Воспроизведение аудио+видео: {os.path.basename(audio_path)}, {os.path.basename(video_path)}")
+                    await group_call.play(
+                        chat_id,
+                        MediaStream(
+                            video_path,
+                            video_parameters=VideoStream(),
+                            audio_parameters=AudioStream()
+                        )
+                    )
+                    result['media_played'] = f'audio: {os.path.basename(audio_path)}, video: {os.path.basename(video_path)}'
+                elif audio_path:
+                    # Только аудио
+                    logger.info(f"[Account {account_id}] Воспроизведение аудио: {os.path.basename(audio_path)}")
+                    await group_call.play(
+                        chat_id,
+                        MediaStream(
+                            audio_path,
+                            audio_parameters=AudioStream()
+                        )
+                    )
+                    result['media_played'] = f'audio: {os.path.basename(audio_path)}'
+                else:
+                    result['error'] = 'Не указан медиафайл'
+                    logger.error(f"[Account {account_id}] {result['error']}")
+                    return result
+
             else:
                 # Для pytgcalls 2.x
-                group_call = GroupCallFactory(client).get_file_group_call()
-                logger.info(f"[Account {account_id}] GroupCall создан")
-        except Exception as e:
-            result['error'] = f'Ошибка создания группового вызова: {str(e)}'
-            logger.error(f"[Account {account_id}] {result['error']}")
-            return result
-
-        # Присоединяемся к голосовому чату
-        try:
-            logger.info(f"[Account {account_id}] Присоединение к голосовому чату {chat_id}")
-            if PYTGCALLS_VERSION == "3.x":
-                # API для 3.x отличается
-                result['error'] = 'pytgcalls 3.x пока не поддерживается полностью'
-                logger.error(f"[Account {account_id}] {result['error']}")
-                return result
-            else:
+                # start() присоединяет к существующему голосовому чату
                 await group_call.start(chat_id)
                 logger.info(f"[Account {account_id}] Успешно присоединились к голосовому чату")
-        except Exception as e:
-            result['error'] = f'Не удалось присоединиться к голосовому чату: {str(e)}'
-            logger.error(f"[Account {account_id}] {result['error']}")
-            return result
 
-        # Воспроизводим медиа
-        try:
-            if enable_video and audio_path and video_path:
-                # Аудио + Видео
-                logger.info(f"[Account {account_id}] Воспроизведение аудио+видео: {audio_path}, {video_path}")
-                await group_call.play_file(
-                    audio_path,
-                    video_path=video_path,
-                    repeat=False
-                )
-                result['media_played'] = f'audio: {os.path.basename(audio_path)}, video: {os.path.basename(video_path)}'
-            elif audio_path:
-                # Только аудио
-                logger.info(f"[Account {account_id}] Воспроизведение аудио: {audio_path}")
-                await group_call.play_file(audio_path, repeat=False)
-                result['media_played'] = f'audio: {os.path.basename(audio_path)}'
-            else:
-                result['error'] = 'Не указан медиафайл'
-                logger.error(f"[Account {account_id}] {result['error']}")
-                await group_call.stop()
-                return result
+                # Воспроизводим медиа
+                if enable_video and audio_path and video_path:
+                    # Аудио + Видео
+                    logger.info(f"[Account {account_id}] Воспроизведение аудио+видео: {os.path.basename(audio_path)}, {os.path.basename(video_path)}")
+                    await group_call.play_file(
+                        audio_path,
+                        video_path=video_path,
+                        repeat=False
+                    )
+                    result['media_played'] = f'audio: {os.path.basename(audio_path)}, video: {os.path.basename(video_path)}'
+                elif audio_path:
+                    # Только аудио
+                    logger.info(f"[Account {account_id}] Воспроизведение аудио: {os.path.basename(audio_path)}")
+                    await group_call.play_file(audio_path, repeat=False)
+                    result['media_played'] = f'audio: {os.path.basename(audio_path)}'
+                else:
+                    result['error'] = 'Не указан медиафайл'
+                    logger.error(f"[Account {account_id}] {result['error']}")
+                    await group_call.stop()
+                    return result
 
             result['success'] = True
             result['action'] = 'joined_and_playing'
             logger.info(f"[Account {account_id}] Воспроизведение началось успешно")
+
         except Exception as e:
-            result['error'] = f'Ошибка воспроизведения: {str(e)}'
-            logger.error(f"[Account {account_id}] {result['error']}")
+            result['error'] = f'Не удалось присоединиться/воспроизвести: {str(e)}. Убедитесь, что голосовой чат запущен!'
+            logger.error(f"[Account {account_id}] {result['error']}", exc_info=True)
             try:
-                await group_call.stop()
+                if PYTGCALLS_VERSION == "3.x":
+                    await group_call.leave_call(chat_id)
+                else:
+                    await group_call.stop()
             except:
                 pass
             return result
@@ -396,16 +433,15 @@ async def _play_media_for_account(
             # До конца файла или до stop_flag
             logger.info(f"[Account {account_id}] Воспроизведение до остановки")
             while not stop_flag.is_set():
-                # Проверяем, играет ли еще файл
-                if not group_call.is_connected:
-                    logger.info(f"[Account {account_id}] GroupCall отключился")
-                    break
                 await asyncio.sleep(1)
 
         # Выходим из голосового чата
         logger.info(f"[Account {account_id}] Выход из голосового чата")
         try:
-            await group_call.stop()
+            if PYTGCALLS_VERSION == "3.x":
+                await group_call.leave_call(chat_id)
+            else:
+                await group_call.stop()
             logger.info(f"[Account {account_id}] Успешно вышли из голосового чата")
         except Exception as e:
             result['error'] = f'Ошибка выхода: {str(e)}'
@@ -421,9 +457,15 @@ async def _play_media_for_account(
 
     finally:
         # Очистка ресурсов
-        if group_call:
+        if group_call and chat_id:
             try:
-                await group_call.stop()
+                if PYTGCALLS_VERSION == "3.x":
+                    try:
+                        await group_call.leave_call(chat_id)
+                    except:
+                        pass
+                else:
+                    await group_call.stop()
             except:
                 pass
 
