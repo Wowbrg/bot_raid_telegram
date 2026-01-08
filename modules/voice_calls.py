@@ -324,8 +324,15 @@ async def _play_media_for_account(
         try:
             logger.info(f"[Account {account_id}] Инициализация pytgcalls клиента (версия {PYTGCALLS_VERSION})")
 
-            # Создаем PyTgCalls клиент (для версий 2.x и 3.x)
+            # Получаем entity текущего пользователя
+            me = await client.get_me()
+            logger.info(f"[Account {account_id}] Присоединение от имени пользователя {me.id}")
+
+            # Создаем PyTgCalls клиент
             group_call = PyTgCalls(client)
+
+            # Устанавливаем default_join_as для присоединения от имени пользователя, а не канала
+            group_call._cache_user_peer = me
 
             # Запускаем клиент
             await group_call.start()
