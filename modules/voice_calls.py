@@ -3,9 +3,34 @@ import os
 import random
 from typing import List, Dict, Optional
 from telethon.errors import FloodWaitError
-from pytgcalls import GroupCallFactory
 from modules.account_manager import AccountManager
 import config
+
+# Попытка импорта pytgcalls с обработкой разных версий
+PYTGCALLS_AVAILABLE = False
+PYTGCALLS_ERROR = None
+PYTGCALLS_VERSION = None
+GroupCallFactory = None
+
+try:
+    from pytgcalls import GroupCallFactory
+    PYTGCALLS_AVAILABLE = True
+    PYTGCALLS_VERSION = "2.x"
+except ImportError:
+    try:
+        from pytgcalls.group_call_factory import GroupCallFactory
+        PYTGCALLS_AVAILABLE = True
+        PYTGCALLS_VERSION = "2.x-alt"
+    except ImportError:
+        try:
+            # Попытка импорта для pytgcalls 3.x
+            from pytgcalls import PyTgCalls
+            PYTGCALLS_AVAILABLE = True
+            PYTGCALLS_VERSION = "3.x"
+        except ImportError as e:
+            PYTGCALLS_ERROR = str(e)
+            PYTGCALLS_AVAILABLE = False
+            PYTGCALLS_VERSION = None
 
 
 async def join_voice_chat(
@@ -25,6 +50,11 @@ async def join_voice_chat(
     - enable_video: включить видео (True/False)
     - video_file: путь к видеофайлу (если enable_video=True)
     """
+    # Проверка доступности pytgcalls
+    if not PYTGCALLS_AVAILABLE:
+        error_msg = f'Библиотека pytgcalls недоступна. Установите: pip install pytgcalls. Ошибка: {PYTGCALLS_ERROR}'
+        return [{'account_id': aid, 'success': False, 'error': error_msg} for aid in account_ids]
+
     group_link = task_config.get('group_link')
     audio_file = task_config.get('audio_file')
     playback_mode = task_config.get('playback_mode', 'sync')
@@ -233,12 +263,29 @@ async def _play_media_for_account(
             result['error'] = f'Группа не найдена: {str(e)}'
             return result
 
-        # Создаем GroupCall через фабрику
-        group_call = GroupCallFactory(client).get_file_group_call()
+        # Создаем GroupCall через фабрику (поддержка разных версий)
+        try:
+            if PYTGCALLS_VERSION == "3.x":
+                # Для pytgcalls 3.x (новая версия)
+                from pytgcalls import PyTgCalls
+                from pytgcalls.types import AudioPiped, VideoPiped
+                group_call = PyTgCalls(client)
+                await group_call.start()
+            else:
+                # Для pytgcalls 2.x
+                group_call = GroupCallFactory(client).get_file_group_call()
+        except Exception as e:
+            result['error'] = f'Ошибка создания группового вызова: {str(e)}'
+            return result
 
         # Присоединяемся к голосовому чату
         try:
-            await group_call.start(chat_id)
+            if PYTGCALLS_VERSION == "3.x":
+                # API для 3.x отличается
+                result['error'] = 'pytgcalls 3.x пока не поддерживается полностью'
+                return result
+            else:
+                await group_call.start(chat_id)
         except Exception as e:
             result['error'] = f'Не удалось присоединиться к голосовому чату: {str(e)}'
             return result
@@ -266,7 +313,10 @@ async def _play_media_for_account(
             result['action'] = 'joined_and_playing'
         except Exception as e:
             result['error'] = f'Ошибка воспроизведения: {str(e)}'
-            await group_call.stop()
+            try:
+                await group_call.stop()
+            except:
+                pass
             return result
 
         # Ожидание завершения
