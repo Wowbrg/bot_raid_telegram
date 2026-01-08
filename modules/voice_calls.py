@@ -325,7 +325,12 @@ async def _play_media_for_account(
                 # Для pytgcalls 3.x используем PyTgCalls
                 from pytgcalls import PyTgCalls
 
-                group_call = PyTgCalls(client)
+                # Получаем entity текущего пользователя для join_as
+                me = await client.get_me()
+                logger.info(f"[Account {account_id}] Присоединение от имени пользователя {me.id}")
+
+                # Создаем PyTgCalls с параметром join_as
+                group_call = PyTgCalls(client, join_as=me)
                 # Запускаем клиент
                 await group_call.start()
                 logger.info(f"[Account {account_id}] PyTgCalls клиент запущен")
@@ -347,10 +352,6 @@ async def _play_media_for_account(
                 # Для pytgcalls 3.x - используем MediaStream и метод play()
                 from pytgcalls.types import MediaStream
 
-                # Получаем entity текущего пользователя для join_as
-                me = await client.get_me()
-                logger.info(f"[Account {account_id}] Присоединение от имени пользователя {me.id}")
-
                 if enable_video and audio_path and video_path:
                     # Аудио + Видео
                     logger.info(f"[Account {account_id}] Воспроизведение аудио+видео: {os.path.basename(audio_path)}, {os.path.basename(video_path)}")
@@ -359,8 +360,7 @@ async def _play_media_for_account(
                         MediaStream(
                             audio_path,
                             video_path
-                        ),
-                        join_as=me
+                        )
                     )
                     result['media_played'] = f'audio: {os.path.basename(audio_path)}, video: {os.path.basename(video_path)}'
                 elif audio_path:
@@ -371,8 +371,7 @@ async def _play_media_for_account(
                         MediaStream(
                             audio_path,
                             video_flags=MediaStream.Flags.IGNORE
-                        ),
-                        join_as=me
+                        )
                     )
                     result['media_played'] = f'audio: {os.path.basename(audio_path)}'
                 else:
