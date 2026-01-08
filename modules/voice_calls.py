@@ -328,6 +328,10 @@ async def _play_media_for_account(
             me = await client.get_me()
             logger.info(f"[Account {account_id}] Присоединение от имени пользователя {me.id}")
 
+            # Преобразуем entity в InputPeerUser для корректной работы с pytgcalls
+            from telethon.tl.types import InputPeerUser
+            me_peer = InputPeerUser(user_id=me.id, access_hash=me.access_hash)
+
             # Создаем PyTgCalls клиент
             group_call = PyTgCalls(client)
 
@@ -337,8 +341,8 @@ async def _play_media_for_account(
             # Устанавливаем join_as для присоединения от имени пользователя, а не канала
             # Используем внутренний MTProto bridge для установки join_as
             if hasattr(group_call, '_app'):
-                group_call._app.join_as = me
-                logger.info(f"[Account {account_id}] Установлен join_as через _app")
+                group_call._app.join_as = me_peer
+                logger.info(f"[Account {account_id}] Установлен join_as через _app (InputPeerUser)")
 
             logger.info(f"[Account {account_id}] PyTgCalls клиент запущен")
 
