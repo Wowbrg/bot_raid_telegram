@@ -339,10 +339,18 @@ async def _play_media_for_account(
             await group_call.start()
 
             # Устанавливаем join_as для присоединения от имени пользователя, а не канала
-            # Используем внутренний MTProto bridge для установки join_as
-            if hasattr(group_call, '_app'):
+            # Используем метод resolve_and_set_join_as для правильной установки
+            if hasattr(group_call, '_app') and hasattr(group_call._app, 'resolve_and_set_join_as'):
+                try:
+                    await group_call._app.resolve_and_set_join_as(me_peer)
+                    logger.info(f"[Account {account_id}] Установлен join_as через resolve_and_set_join_as")
+                except Exception as e:
+                    logger.warning(f"[Account {account_id}] Не удалось установить join_as через метод: {e}, пробуем прямую установку")
+                    group_call._app.join_as = me_peer
+                    logger.info(f"[Account {account_id}] Установлен join_as напрямую (InputPeerUser)")
+            elif hasattr(group_call, '_app'):
                 group_call._app.join_as = me_peer
-                logger.info(f"[Account {account_id}] Установлен join_as через _app (InputPeerUser)")
+                logger.info(f"[Account {account_id}] Установлен join_as напрямую (InputPeerUser)")
 
             logger.info(f"[Account {account_id}] PyTgCalls клиент запущен")
 
